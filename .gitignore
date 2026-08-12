@@ -1,6 +1,6 @@
-data
-projects/__pycache__
 pdf
+data
+scripts/__pycache__
 env
 .env
 .venv
