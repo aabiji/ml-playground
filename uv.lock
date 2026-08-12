@@ -1258,6 +1258,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "datasets", extra = ["vision"] },
+    { name = "huggingface-hub" },
     { name = "ipykernel" },
     { name = "jupyter" },
     { name = "matplotlib" },
@@ -1271,6 +1272,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "datasets", extras = ["vision"] },
+    { name = "huggingface-hub", specifier = ">=1.27.0" },
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "matplotlib" },
