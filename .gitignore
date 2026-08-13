@@ -1,6 +1,2 @@
-pdf
-data
 scripts/__pycache__
-env
-.env
 .venv
