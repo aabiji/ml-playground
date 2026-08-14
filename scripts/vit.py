@@ -1,46 +1,43 @@
+%matplotlib inline
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
+from IPython import display
+
+import math
 import torch
 import torch.nn as nn
 from torchvision.transforms import v2
-from torch.utils.data import Dataset, DataLoader
+from torchvision import datasets
+from torch.utils.data import DataLoader
 from torch.optim.adam import Adam
 from torch.optim.lr_scheduler import LinearLR
 
-from datasets import load_dataset
-from huggingface_hub import login
-
-import matplotlib.pyplot as plt
-import math
-
-
-class ViT(nn.Module):
-  def __init__(self, D, L, H):
+class Encoder(nn.Module):
+  def __init__(self, D, H):
     super().__init__()
-    self.sqrt_dim = math.sqrt(D // H)
-    self.num_layers, self.num_sublayers = L, 9
+    self.norm1 = nn.LayerNorm(D)
+    self.Q_embed = nn.Linear(D, D, bias=False)
+    self.K_embed = nn.Linear(D, D, bias=False)
+    self.V_embed = nn.Linear(D, D, bias=False)
+    self.O_embed = nn.Linear(D, D, bias=False)
 
-    self.embeddings = nn.ParameterList([
-      l for l in [
-        nn.Parameter(torch.rand(H, D, D // H)),
-        nn.Parameter(torch.rand(H, D, D // H)),
-        nn.Parameter(torch.rand(H, D, D // H)),
-        nn.Parameter(torch.rand(D, D)),
-      ] for _ in range(L)
-    ])
+    self.norm2 = nn.LayerNorm(D)
+    self.mlp_hidden = nn.Linear(D, D * 4)
+    self.mlp_act = nn.GELU()
+    self.mlp_out = nn.Linear(D * 4, D)
 
-    self.layers = nn.ModuleList([l for l in [
-      nn.LayerNorm(D),
-      nn.LayerNorm(D),
-      nn.Linear(D, D * 4),
-      nn.Linear(D * 4, D),
-      nn.LayerNorm(D)
-    ] for _ in range(L)])
+    self.norm3 = nn.LayerNorm(D)
+    self.h = H
 
-  # MultiHead Self Attention, where Q = K = V
-  def MSA(self, X, Q_embed, K_embed, V_embed, O_embed):
-    # Project each attention head into a smaller vector space
-    Q_proj = X.unsqueeze(1) @ Q_embed.unsqueeze(0)
-    K_proj = X.unsqueeze(1) @ K_embed.unsqueeze(0)
-    V_proj = X.unsqueeze(1) @ V_embed.unsqueeze(0)
+  def forward(self, x):
+    # MultiHead Self-Attention, where Q = K = V
+    x = self.norm1(x)
+
+    # Project each attention headnum_tokens into a smaller vector space
+    b, n, d = x.shape[0], x.shape[1], x.shape[2]
+    Q_proj = self.Q_embed(x).view(b, n, self.h, d // self.h)
+    K_proj = self.Q_embed(x).view(b, n, self.h, d // self.h)
+    V_proj = self.Q_embed(x).view(b, n, self.h, d // self.h)
 
     # Self-attention for each attention head
     scores = torch.softmax(Q_proj @ K_proj.T / self.sqrt_dim, dim=-1)
@@ -48,81 +45,128 @@ class ViT(nn.Module):
     # Concatenate the scaled values (H x N x D_k) -> (H x N * D_k)
     concat = torch.permute(scores @ V_proj, (1, 0, 2)).reshape(-1)
 
-    # Linearly project back into the original vector space
-    return concat @ O_embed
+    # Linearly project back into the original vector space and add a residual connection
+    z = self.O_embed(concat) + x
 
-  def forward(self, x):
-    for l in range(self.num_layers):
-      Q_embed, K_embed, V_embed, O_embed = self.embeddings[l * 4: (l + 1) * 4]
-      norm1, norm2, linear1, linear2, norm3 = self.layers[l * 5: (l + 1) * 5]
+    # Feed forward network
+    hidden = self.mlp_hidden(self.norm2(z))
+    output = self.mlp_out(self.mlp_act(hidden))
+    return self.norm3(output + z)
 
-      msa_out = self.MSA(norm1(x), Q_embed, K_embed, V_embed, O_embed)
-      z = msa_out + x
+class ViT(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    D, H = config["embedding_dim"], config["attn_heads"]
+    self.L, self.P = config["encoder_layers"], config["patch_size"]
 
-      hidden = linear1(norm2(z))
-      mlp_out = linear2(hidden)
-      x = norm3(mlp_out + z)
+    grid_size = config["image_size"] // config["patch_size"]
+    num_tokens = 1 + grid_size * grid_size
+    self.sqrt_dim = math.sqrt(D // H)
 
-    return x
+    self.class_embedding = nn.Parameter(torch.rand(1, 1, D))
+    self.patch_embedding = nn.Parameter(torch.rand(num_tokens, D))
+    self.pos_embedding = nn.Parameter(torch.rand(num_tokens, D))
 
+    self.encoders = nn.ModuleList([Encoder(D, H) for _ in range(self.L)])
 
-def run_model(model, loader, training, device):
-  if training:
-    model.train()
-  else:
-    model.eval()
+    # NOTE: these layers are only for pretraining, see the paper for more details
+    self.head_hidden = nn.Linear(D, D * 2)
+    self.head_act = nn.GELU()
+    self.head_out = nn.Linear(D * 2, config["out_classes"])
 
-  context = torch.enable_grad() if training else torch.no_grad()
-  with context:
-    for batch in loader:
-      images, labels = batch["image"].to(device), batch["label"].to(device)
+  def tokenize_images(self, x):
+    # Split the image into a series of patches in row orderx
+    # [B, C, H, W] -> [B, C, H / P, W / P, P, P]
+    patches = x.unfold(2, self.P, self.P).unfold(3, self.P, self.P)
 
+    # Flatten the patch grid into a flat list and prepend the [class] token
+    patches = patches.permute(0, 2, 3, 1, 4, 5)
+    B, m, c, p = \
+      patches.shape[0], patches.shape[1], patches.shape[3], patches.shape[4]
+    patches = patches.reshape(B, m * m, c * p * p)
+    tokens = torch.cat([self.class_embedding.expand(B, -1, -1), patches], dim=1)
+
+    # Convert the tokens into embeddings and add their positional embeddings
+    return tokens @ self.patch_embedding + self.pos_embedding
+
+  def forward(self, image_batch):
+    x = self.tokenize_images(image_batch)
+
+    for l in range(self.L):
+      x = self.encoders[l](x)
+
+    print(x.shape)
+
+    # Run the classification head on the output [class] token
+    y = self.head_hidden(x[:, 0])
+    return self.head_out(self.head_act(y))
+
+def plot_stats(fig, axs, errors=None, losses=None):
+  clear_output(wait=True)
+  for ax in axs:
+      ax.clear()
+  ax_loss, ax_error = axs[0], axs[1]
+
+  if losses is not None and len(losses) > 0:
+    ax_loss.plot(losses, "b-")
+    ax_loss.autoscale_view(scalex=True, scaley=True)
+    ax_loss.set_title(f"Mean Validation Loss: {losses[-1]:.2f}")
+    ax_loss.set_xlabel("Iterations")
+    ax_loss.set_ylabel("Loss")
+
+  if errors is not None and len(errors) > 0:
+    ax_error.plot(errors, "r-")
+    ax_error.autoscale_view(scalex=True, scaley=True)
+    ax_error.set_title(f"Mean Validation Error {errors[-1]:.2f}")
+    ax_error.set_xlabel("Iterations")
+    ax_error.set_ylabel("Error")
+
+  fig.tight_layout() # Prevents overlapping labels
+  display.display(fig)
+
+def main(root_dir, config):
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  augmentation = v2.Compose([
+    v2.ToImage(),
+    v2.RandomResizedCrop(size=(config["image_size"], config["image_size"]), antialias=True),
+    v2.RandomHorizontalFlip(p=0.5),
+    v2.ToDtype(dtype=torch.float32, scale=True),
+    v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # imagenet-1k mean and std
+  ])
+
+  train_dataset = datasets.ImageFolder(root=root_dir, transform=augmentation)
+  train_loader = DataLoader(train_dataset, batch_size=32,
+                            shuffle=True, num_workers=4, pin_memory=True)
+
+  model = ViT(config).to(device)
+  criterion = nn.CrossEntropyLoss()
+  optimizer = Adam(model.parameters(), lr=8e-4, betas=(0.9, 0.999), weight_decay=0.1)
+  scheduler = LinearLR(optimizer, total_iters=10000)
+
+  losses, errors = [], []
+  fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+
+  #for _ in range(epochs):
+  model.train()
+  with torch.enable_grad():
+    for images, labels in train_loader:
+      images, labels = images.to(device), labels.to(device)
       prediction = model(images)
+
+      print(prediction.shape, labels.shape)
+
       loss = criterion(prediction, labels)
-      if training:
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+      optimizer.zero_grad()
+      loss.backward()
+      optimizer.step()
 
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ViT-8/16
-img_size, patch_size = 224, 16
-num_tokens = 1 + img_size / patch_size
-model = ViT(768, 12, 12).to(device)
-warmup_steps = 10000
-
-criterion = nn.CrossEntropyLoss()
-optimizer = Adam(model.parameters(), lr=8e-4, betas=(0.9, 0.999), weight_decay=0.1)
-scheduler = LinearLR(optimizer, total_iters=warmup_steps)
-
-transform = None
-def process_transform(sample):
-  global transform
-  if transform is None:
-    transform = v2.Compose([
-      v2.RandomResizedCrop(size=(224, 224), antialias=True), # Note: size=384 for fine-tuning
-      v2.RandomHorizontalFlip(p=0.5),
-      v2.ToImage(),
-      v2.ToDtype(dtype=torch.float32, scale=True),
-      #v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # imagenet-1k mean and std
-    ])
-  return { "augmented": transform(sample["image"]).clone(), "label": sample["label"] }
-
-def main():
-  data_stream = load_dataset("ILSVRC/imagenet-1k", split="train", streaming=True)
-  data_stream = data_stream.map(process_transform, remove_columns=["image"])
-  train_loader = DataLoader(data_stream, batch_size=32, num_workers=4) # type: ignore[arg-type]
-
-  for _, batch in enumerate(train_loader, start=1):
-    images, labels = batch["augmented"], batch["label"]
-    plt.imshow(images[0].permute(*torch.arange(images[0].ndim - 1, -1, -1)))
+    scheduler.step()
 
 if __name__ == "__main__":
-  main()
+  config = { "embedding_dim": 768, "attn_heads": 12, "encoder_layers": 12,
+             "image_size": 224, "patch_size": 16, "out_classes": 200, "epochs": 7 }
+  main("/kaggle/input/datasets/sautkin/imagenet1k0", config)
 
-# TODO: Visualize an image using matplotlib
 # TODO: pretrain model on ImageNet-1k
 # TODO: Visualize the attention maps
 # TODO: fine tune on another dataset
