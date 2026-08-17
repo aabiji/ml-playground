@@ -9,6 +9,7 @@ from torchvision import datasets
 from torch.utils.data import DataLoader
 from torch.optim.adam import Adam
 from torch.optim.lr_scheduler import LinearLR
+from torch.amp import autocast, GradScaler
 
 # Pre train on a large imagenet dataset, save the weights, load the weights, replace the classification head and fine tune on cifar10 dataset.
 # --> Compare test performance on self supervised pretraining vs supervised pretraining.
@@ -34,10 +35,8 @@ class Encoder(nn.Module):
     self.mlp_act = nn.GELU()
     self.mlp_out = nn.Linear(d_h, d_e)
 
-    self.norm3 = nn.LayerNorm(d_e)
-
   def forward(self, x):
-    # MultiHead Self-Attention, where Q = K = V
+    # MultiHead Self-Attention
     x = self.norm1(x)
 
     # Project each attention headnum_tokens into a smaller vector space
@@ -75,7 +74,6 @@ class ViT(nn.Module):
     self.class_embedding = nn.Parameter(torch.zeros(1, 1, d_e))
     self.pos_embedding = nn.Parameter(torch.zeros(1, num_tokens, d_e))
 
-    # Rough approximation of Xavier initialization
     nn.init.trunc_normal_(self.class_embedding, std=0.02)
     nn.init.trunc_normal_(self.pos_embedding, std=0.02)
 
@@ -143,45 +141,44 @@ def plot_stats(fig, ax_loss, ax_error, losses, errors, epoch):
 def mean_error(model, loader, device, norm):
   num_correct, total = 0, 0
 
-  with torch.no_grad():
+  with torch.inference_mode():
     model.eval()
     for images, labels in loader:
-      images, labels = images.to(device), labels.to(device)
       images = norm(images.to(device))
       labels = labels.to(device)
 
-      prediction = nn.functional.softmax(model(images), dim=1)
-      answers = prediction.argmax(dim=1)
-      num_correct += (answers == labels).sum().item()
-      total += labels.shape[0]
+      with autocast(device.type):
+          answers = model(images).argmax(dim=1)
+          num_correct += (answers == labels).sum().item()
+          total += labels.shape[0]
 
   return 100 - 100 * num_correct / total
 
 
 def main(train_dir, val_dir, config):
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  imagenet_mean, imagenet_std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+  scaler = GradScaler(device.type)
 
+  imagenet_mean, imagenet_std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
   cpu_transforms = v2.Compose([ v2.ToImage(), v2.ToDtype(dtype=torch.float32, scale=True) ])
-  train_augmentations = nn.Sequential(
+  gpu_augmentations = nn.Sequential(
     v2.RandomHorizontalFlip(p=0.5),
     v2.RandomResizedCrop(size=(config["image_size"], config["image_size"]), antialias=True),
     v2.Normalize(mean=imagenet_mean, std=imagenet_std)
   )
-  val_augmentations = nn.Sequential(v2.Normalize(mean=imagenet_mean, std=imagenet_std))
 
   train_dataset = datasets.ImageFolder(root=train_dir, transform=cpu_transforms)
-  train_loader = DataLoader(train_dataset, batch_size=64, persistent_workers=True,
+  train_loader = DataLoader(train_dataset, batch_size=32, persistent_workers=True,
                             shuffle=True, num_workers=4, pin_memory=True)
 
   val_dataset = datasets.ImageFolder(root=val_dir, transform=cpu_transforms)
-  val_loader = DataLoader(val_dataset, batch_size=64, persistent_workers=True,
-                          shuffle=True, num_workers=4, pin_memory=True)
+  val_loader = DataLoader(val_dataset, batch_size=32, persistent_workers=True,
+                          num_workers=4, pin_memory=True)
 
   model = ViT(config).to(device)
   criterion = nn.CrossEntropyLoss()
   optimizer = Adam(model.parameters(), lr=8e-4, betas=(0.9, 0.999), weight_decay=0.1)
-  scheduler = LinearLR(optimizer, total_iters=10000)
+  scheduler = LinearLR(optimizer)
 
   losses, errors = [], []
   fig, (ax_loss, ax_error) = plt.subplots(1, 2, figsize=(12, 5))
@@ -189,24 +186,25 @@ def main(train_dir, val_dir, config):
   print("Training started...")
   for epoch in range(config["epochs"]):
     model.train()
-    total_loss, total = 0, 0
+    total_loss = 0
 
     with torch.enable_grad():
       for images, labels in train_loader:
-        images = train_augmentations(images.to(device))
+        images = gpu_augmentations(images.to(device))
         labels = labels.to(device)
+        optimizer.zero_grad(set_to_none=True)
 
-        loss = criterion(model(images), labels)
-        total_loss += loss.item()
-        total += labels.shape[0]
+        with autocast(device.type):
+            loss = criterion(model(images), labels)
+            total_loss += loss.item()
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
 
-    errors.append(mean_error(model, val_loader, device, val_augmentations))
-    losses.append(total_loss / total)
+    errors.append(mean_error(model, val_loader, device, gpu_augmentations))
+    losses.append(total_loss / len(train_loader))
     plot_stats(fig, ax_loss, ax_error, losses, errors, epoch)
 
   fig.savefig("pretrain_curves.png", dpi=300, bbox_inches="tight")
@@ -218,8 +216,8 @@ if __name__ == "__main__":
     "/kaggle/input/datasets/akash2sharma/tiny-imagenet/tiny-imagenet-200/train",
     "/kaggle/input/datasets/akash2sharma/tiny-imagenet/tiny-imagenet-200/val",
     {
-      "embedding_dim": 768,
-      "hidden_dim": 3072,
+      "embedding_dim": 324,
+      "hidden_dim": 1536,
       "attn_heads": 12,
       "encoder_layers": 12,
       "image_size": 224,
