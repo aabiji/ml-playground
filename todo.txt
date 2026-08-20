@@ -1,0 +1,35 @@
+Workflow:
+1 hour reading papers
+2 hours coding
+1 hour writeup, thinking of what to do tomorrow and answering questions
+
+
+Today:
+- Review "Attention Is All You Need"
+
+- Read "Improving Language Understanding by Generative Pretraining"
+
+- Implement a decoder only transformer model in pytorch
+  - Implement tokenization from scratch
+
+- Understand:
+  - What is the training objective for transformers?
+    - If the model is autoregressive, does that mean that each step is doing backprop and
+      an optimizer step using the cross entropy loss of the next expected output token?
+
+  - How is model accuracy calculated for next token prediction tasks?
+    - What are BLEU scores? How are they computed?
+
+
+Tomorrow:
+- Find a good dataset to train on (WMT??)
+
+- Train the decoder only transformer
+  - Use mixed precision: https://mbrenndoerfer.com/writing/mixed-precision-training-fp16-bf16-loss-scaling
+
+  - Use a learning rate scheduler with warmup in Pytorch: https://arxiv.org/pdf/2406.09405
+
+  - Implement model checkpointing: https://nebius.com/blog/posts/model-pre-training/large-ml-model-checkpointing-tips
+
+Next tomorrow:
+- Think of experiement ideas or questions
