@@ -10,7 +10,6 @@ Today:
 - Read "Improving Language Understanding by Generative Pretraining"
 
 - Implement a decoder only transformer model in pytorch
-  - Implement tokenization from scratch
 
 - Understand:
   - What is the training objective for transformers?
@@ -31,5 +30,15 @@ Tomorrow:
 
   - Implement model checkpointing: https://nebius.com/blog/posts/model-pre-training/large-ml-model-checkpointing-tips
 
-Next tomorrow:
-- Think of experiement ideas or questions
+  - Visualize attention heads
+
+Paper list:
+- Attention Is All You Need
+- Improving Language Understanding with Unsupervised Learning
+- Language Models are Unsupervised Multitask Learners
+- Scaling Laws for Neural Language Models
+- Training Compute-Optimal Large Language Models
+- In-context Learning and Induction Heads
+- Language Models are Few-Shot Learners
+- FlashAttention
+...still need to read BERT, Mixture-of-Experts, RAG, RLHF, DPO, multimodal LLMs, etc
