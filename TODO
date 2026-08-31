@@ -1,0 +1,8 @@
+Read the GPT-2 and understand its main premise
+Implement GPT on BabyLM dataset
+  - Load dataset, custom tokenizer, 5k vocab size?
+  - Implement model architecture
+  - Implement training loop
+  - Attempt to overfit on a subset of the dataset
+  - Attempt experiments
+Reimplement the vision transformer paper, and get it to train better

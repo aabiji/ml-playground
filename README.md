@@ -1,5 +1,8 @@
 ### Project ideas
 
+- Time series model to predict the next occuring date of an event
+  - Use a transformer?? Turn timestamps into tokens...and output the next date in the learned sequence??
+
 - Vision transformer models listed [here](https://github.com/lucidrains/vit-pytorch)
   - [An Image Is Worth 16x16 Words: Transformers For Image Recognition At Scale](https://arxiv.org/pdf/2010.11929)
   - [Segment Anything](https://openaccess.thecvf.com/content/ICCV2023/papers/Kirillov_Segment_Anything_ICCV_2023_paper.pdf)
@@ -25,11 +28,9 @@
 
 - [AlphaZero](https://arxiv.org/pdf/1712.01815)
 
-- [Computational Biology](https://www.youtube.com/watch?v=9FrNuTFz4Zs)
-
 - Movie recommendation model:
   - descriptions, reviews, genre, actors list, and rating as inputs
   - convert to an embedding
   - do math to find embeddings that are close together, which should be similar
 
-- Time series model to predict the next occuring date of an event
+- Explore BERT, Mixture-of-Experts, RAG, RLHF, DPO, multimodal LLMs, etc
