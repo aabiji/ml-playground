@@ -262,4 +262,27 @@ Multi-head attention is used as the core attention mechanism. First, the input e
 
 After the embeddings, encoder layers and decoder layers, there is a final linear layer that outputs a $n \times V$ matrix of probability distribution, where $n$ is the number of embeddings and $V$ is the vocabulary size. Each row in the matrix corresponds to a probability distribution of the following word. For example, if the input is "<BOS> I like", the output might correpond to "I like cats". "I" is predicted to come after "<BOS>", "cats" is predicted to come after "like" and so on. Thus, during training the output token sequence must be shifted right before being fed into the Transformer so that the model doesn't learn to simply copy the last token in the sequence.
 
+\section{Generative Pre-trained Transformer models}
+
+Instead of having an ensemble of task-specific models and datasets, it would be better to have a
+single model that has zero-shot task transfer with as little parameter or architectural changes as possible.
+
+\subsection{GPT-1}
+\begin{itemize}
+\item It's composed of several layers of transformer decoders followed by a feed forward head.
+\item The transformer is referred to as a "decoder" because of its masked self-attention, not because of its structure.
+\item Training is split into two phases: generative pre-training and supervised fine tuning.
+\item Pre-training is self-supervised since the likelyhood of predicting the next token is optimized.
+\item During post-training, any arbitrary supervised learning objective can be optimized.
+\end{itemize}
+
+\subsection{GPT-2}
+\begin{itemize}
+\item Maximize p(output | input, task), where the output, input and task are a sequence of symbols. Instead of seperating input, task and output, combine them into one input symbol sequence.
+\item In principle, language modelling should be able to learn various tasks through next token prediction. Although the objective is extremely simple, the skills needed to do it effectively are very complex. For example, to predict the next word in this sentence: "In french we would say the phrase: 'The dog ate my homework' as 'Le chien a mangé mes" as "devoirs", the model needs to have a semantic and gramatical understanding of the english sentence and partial french sentence, it needs to recognize that this is a translation task, and it needs to understand the nuance between the different next word choices, etc.
+\item Given enough capacity and enough diverse data, both in massive quantities, the model should be able to learn the abstract representations needed to model language effectively and generalize well to unseen examples. The question is *how*.
+\item Text is tokenized using BPE (on bytes not unicode chars) and merging across punctuation is not allowed to enable better use of a limited vocabulary.
+\item The model follows the original GPT-1 architecture with a few changes. The context window size is 1024 tokens long and residual layers weights are scaled by 1 / sqrt(N), where N = number of residual layers. LayerNorm as the first step in layer in order to normalize inputs and preserve an identity gradient and another LayerNorm after the final self-attention block.
+\end{itemize}
+
 \end{document}
