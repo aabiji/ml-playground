@@ -1,192 +1,124 @@
-"""
-import torch
 from datasets import load_dataset
-from queue import PriorityQueue
+import tiktoken
+import torch
+import torch.nn as nn
 
-seed = 67
-torch.manual_seed(seed)
+def get_line_stats(batch, tokenizer):
+  tokens_batch = []
+  length_batch = []
+  for row in batch["text"]:
+    tokens = tokenizer.encode(row)
+    tokens_batch.append(tokens)
+    length_batch.append(len(tokens))
+  return {"tokens": tokens_batch, "length": length_batch}
 
-def byte_pair_encode(raw_bytes, id_start, max_rule_size):
-  merge_rules = PriorityQueue()
-  merge_id = id_start
-  data = list(map(lambda x: [x, 1], raw_bytes))
+def prepare_dataset(name, cache_file, tokenizer, pad_token, tok_chk_size):
+  # Load the dataset and gather token lengths
+  dataset = load_dataset(name, split="train")
+  dataset = dataset.map(
+    lambda b: get_line_stats(b, tokenizer),
+    batched=True,
+    remove_columns=["text"]
+  )
 
-  while merge_rules.qsize() < max_rule_size:
-    frequencies, i = {}, 0
-    while i < len(data):
-      curr_value, curr_skip = data[i]
-      if i + curr_skip >= len(data):
-          break
+  # Pad each token sequence into a fixed size
+  shape = (len(dataset), max(dataset["length"]))
+  padded = torch.full(shape, pad_token, dtype=torch.float32)
+  for i, tokens in enumerate(dataset["tokens"]):
+    padded[i, :len(tokens)] = torch.tensor(tokens, dtype=torch.float32)
 
-      next_value, next_skip = data[i + curr_skip]
-      key = (curr_value, next_value)
-      if key in frequencies:
-          frequencies[key].append(i)
-      else:
-          frequencies[key] = [i]
-      i += curr_skip + next_skip
+  # Split each sequence into chunks and cache them
+  chunks = torch.chunk(padded, chunks=tok_chk_size, dim=1)
+  torch.save(chunks, cache_file)
+  return chunks
 
-    most_frequent = max(frequencies.values(), key=lambda a: len(a))
-    for idx in most_frequent:
-      curr_value, curr_skip = data[idx]
-      next_value, next_skip = data[idx + curr_skip]
-      priority = -(merge_id - id_start)
-      data[idx] = [merge_id, curr_skip + next_skip]
-      merge_rules.put((priority, (merge_id, curr_value, next_value)))
+class Decoder(nn.Module):
+  # B x T x E input and output, where B is the batch size, T is the token sequence
+  # length and E is the embedding dimension. Each token is in a range of [0, V],
+  # where V is the vocabulary size
+  def __init__(self, E, H, D_k, D_f):
+    super().__init__()
+    self.H, self.D_k = H, D_k
+    self.D_k_scale = 1 / torch.sqrt(self.D_k).item()
 
-    merge_id += 1
+    # Linear projection matrices for the query, key and value
+    # B x T x E -> B x H x T x D_k, where H is the number of attention heads and
+    # D_k is the query, key and value embedding dimension for each attention head
+    self.Q_proj = nn.Paramter(torch.tensor(E, D_k * H))
+    self.K_proj = nn.Paramter(torch.tensor(E, D_k * H))
+    self.V_proj = nn.Paramter(torch.tensor(E, D_k * H))
+    # Output projection for the scaled values of the concatenated attention heads
+    self.O_proj = nn.Paramter(torch.tensor(D_k * H, E))
 
-  encoded, i = [], 0
-  while i < len(data):
-    value, skip = data[i]
-    encoded.append(value)
-    i += skip
+    self.norm1 = nn.LayerNorm(E) # After the multihead self-attention
+    self.norm2 = nn.LayerNorm(E) # After the feed forward network
 
-  return encoded, merge_rules
+    # Feed forward network: B x T x E -> B x T x D_f -> B x T x E,
+    # where D_f is the dimension of the hidden layer
+    self.ffn = nn.ModuleList([nn.Linear(E, D_f), nn.ReLU(), nn.Linear(D_f, E)])
 
+  def forward(self, x):
+    # Linearly project queries, keys and value for each attention head, perform
+    # multi-head masked self attention on the input, each concatenate each attention
+    # head's values and linearly project them back into embedding space.
+    B, T = x.shape[0], x.shape[1]
+    Q = (x @ self.Q_proj).reshape(B, T, self.H, self.D_k).transpose(1, 2)
+    K = (x @ self.K_proj).reshape(B, T, self.H, self.D_k).transpose(1, 2)
+    V = (x @ self.V_proj).reshape(B, T, self.H, self.D_k).transpose(1, 2)
 
-def byte_pair_decode(encoded, merge_rules):
-  def apply_merge_rule(value, rules):
-    if value not in rules:
-       return [value]
+    # TODO: how big are these attention matrices? Their size must cause performance/memory issues...
+    scores = (Q @ K.tranpose(-1, -2)) * self.D_k_scale
+    # Applying softmax across in the scores matrix of each attention head
+    scaled = torch.softmax(scores, dim=-1) @ V
+    # Concatenate each attention head and linearly project the result back into embedding space
+    attended = scaled.transpose(1, 2).reshape(B, T, self.H * self.D_k) @ self.O_proj
 
-    expanded = []
-    left, right = rules[value]
-    expanded.extend(apply_merge_rule(left, rules))
-    expanded.extend(apply_merge_rule(right, rules))
-    return expanded
+    # Process the attended values
+    x = self.norm1(attended + x)
+    ffn_output = self.ffn(x)
+    return self.norm2(ffn_output + x)
 
-  decoded = []
-  for value in encoded:
-    decoded.extend(apply_merge_rule(value, merge_rules))
-  return decoded
+# TODO: Compare model performance across architectural changes in GPT-1, GPT-2, GPT-3
+class Transformer(nn.Module):
+  # B x T input and output, where B is the batch size, T is the token sequence
+  # length. Each token is in range [0, V], where V is the vocabulary size.
+  def __init__(self, T, E, H, D_k, D_f, L):
+    # Embeddings: B x T -> B x T x E, where E is the embedding dimension
+    # Each token selects a row from the learned token embedding matrix
+    self.tok_embed = nn.Parameter(torch.tensor(T, E))
+    self.pos_embed = nn.Parameter(torch.tensor(T, E))
 
+    # Transformer decoder layers are referred to as decoders because of their
+    # auto-regressive masked self-attention, not because of their structure.
+    self.layers = nn.ModuleList([Decoder(E, H, D_k, D_f) for _ in range(L)])
 
-dataset = load_dataset("BabyLM-community/BabyLM-2026-Strict-Small", split="train")
+  def forward(self, x):
+    embeddings = self.tok_embed[x] + self.pos_embed
+    for layer in self.layers:
+      embeddings = layer(embeddings)
 
-sample_size = int(0.1 * len(dataset))
-sample = dataset.shuffle(seed=seed).select(range(sample_size))
-raw_sample = []
-for row in sample:
-  raw = row["text"].encode("utf-8")
-  raw_sample.extend(list(raw))
+    # Convert embeddings back into tokens by creating a B x T x T logit matrix,
+    # getting the most probable token (not using softmax since it won't make a difference)
+    # and ... TODO!
+    out_logits = embeddings @ self.tok_embed.T
+    max_indidces = torch.argmax(out_logits, dim=-1)
+    pass
 
+# TODO:
+# - implement training loop:
+# - add fine details from the original "Attention Is All You Need" and GPT-2 and GPT-3 paper (behind flags for the later models)
+# - visualize loss/error, visualize attention scores from each attention head
+# - add quantization so a bigger model can fit in kaggle gpu memory
+# - read distillation paper
 
+dataset_name = "BabyLM-community/BabyLM-2026-Strict-Small"
+tokenizer = tiktoken.encoding_for_model("gpt2")
+pad_token = tokenizer.n_vocab # EOS token = Pad token to minimize the vocab size
+cache_file = ".cache/prepared-dataset.pth"
 
+try:
+  chunks = torch.load(cache_file)
+except:
+  chunks = prepare_dataset(dataset_name, cache_file, tokenizer, pad_token, 512)
 
-Merge rules: {(iteration, (left, right), replacement)}
-
-Turn list of bytes to a linked list of bytes
-
-Take all rules with the same priority
-
-Scan: Split into groups of 2 bytes. For each group, if it's a merge rule:
-- Update pointers (replace next 2 nodes with 1 node)
-- Add new left pair and new right pair to a list of affected groups
-
-If the list of affected is empty, do a full scan
-Else, iterate through affected only
-
-
-
-['h', 'u', 'g', ' ', 'p', 'u', 'g', ' ', 'h', 'u', 'g']
-['h', 'H', 'p', 'H', 'h', 'H']
-['U', 'p', 'J', 'h', 'H']
-
-[256, 'g', ' ', 'p', 'u', 'g', ' ', 256, 'g']
-
-
-('h', 'u') -> ('h', 'H')
-('g', ' ') -> ('H', ' ')
-('p', 'u') -> ('p', 'H')
-('h', 'u') -> ('h', 'H')
-('g', ' ') -> ('J', ' ')
-
-
-[
-(0, ("u", "g"), H),
-(1, ("H", " "), J),
-(2, ("h", "u"), U)
-]
-
-"""
-
-class ByteNode:
-   def __init__(self, n):
-      self.n = n
-      self.next: None | ByteNode = None
-      self.prev: None | ByteNode = None
-
-def compute_merge_pairs(unicode_bytes, vocab_size):
-  def add_instance(table, key, value):
-    if key in table:
-      table[key].append(value)
-    else:
-      frequencies[key] = [value]
-
-  # Initial frequency pair scan, also building a linked list of the sequence
-  head = ByteNode(unicode_bytes[0])
-  current = head
-  frequencies = {}
-  i = 0
-  while i < len(unicode_bytes):
-    # Last node
-    if i + 1 >= len(unicode_bytes):
-       node = ByteNode(unicode_bytes[i])
-       node.prev = current
-       current.next = node
-       break
-
-    # Next two nodes
-    next2 = ByteNode(unicode_bytes[i + 1])
-    next1 = ByteNode(unicode_bytes[i])
-    next1.prev = current
-    next1.next = next2
-    next2.prev = next1
-    current.next = next1
-    current = next2
-
-    add_instance(frequencies, (unicode_bytes[i], unicode_bytes[i + 1]), next1)
-    i += 2
-
-  merge_pairs = {}
-  merge_id = 256
-
-  temp = head
-  while temp is not None:
-    print(temp.n, end=", ")
-    temp = temp.next
-  print("\n",list(map(lambda x: (x, len(frequencies[x])), frequencies)))
-
-  # Create merge pairs
-  while len(merge_pairs.keys()) < vocab_size:
-    most_frequent = max(frequencies.keys(), key=lambda k: len(frequencies[k]))
-    merge_pairs[most_frequent] = merge_id
-
-    # Update affected pairs
-    for ptr in frequencies[most_frequent]:
-      left = ptr.prev
-      right = ptr.next.next
-
-      replacement = ByteNode(merge_id)
-      replacement.next = right
-      replacement.prev = left
-
-      if left is not None:
-        left.next = replacement
-        add_instance(frequencies, (left.n, replacement.n), left)
-
-      if right is not None:
-        right.prev = replacement
-        add_instance(frequencies, (replacement.n, right.n), replacement)
-
-    merge_id += 1
-    del frequencies[most_frequent]
-
-  while head is not None:
-    print(head.n, end=", ")
-    head = head.next
-  print("\n", list(map(lambda x: (x, len(frequencies[x])), frequencies)))
-  print(merge_pairs)
-
-compute_merge_pairs([1, 2, 3, 4, 5, 2, 3, 4, 1, 2, 3], 5)
+print(len(chunks), chunks[0].shape)
