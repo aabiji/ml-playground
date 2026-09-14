@@ -24,3 +24,10 @@ New project:
 - Deliberately change $\beta$ in $\beta$-VAE
 - Observe what happens when the latent dimensionality changes
 - Consider a medical anomaly detection demo. Regions with high reconstruction loss should correspond to anomalies.
+
+Project idea:
+- Train a model to cancel out human speech for noise cancellation purposes.
+- Get a dataset of human speech, and the objective could be minimizing the noise level?
+- How is it going to be fast enough for real time cancelling? Going to really need to
+  drive down the model latency.
+- Speech cancelling should be adaptive to various environments.
