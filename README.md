@@ -1,8 +1,8 @@
 **DUE September 23**
 
-- Write notes about the roformer paper. Publish "Notes on the Rotary Positional Encoding"
-
 - Understand: *Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention*
+
+- Read [Visual attention variants](https://magazine.sebastianraschka.com/p/visual-attention-variants)
 
 - Implement the following improvements to gpt script:
   - Port from jupyter notebook to regular python script. Make GPT its own seperate project.
