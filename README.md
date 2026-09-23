@@ -1,11 +1,7 @@
-**DUE September 23**
-
-- Understand: *Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention*
-
-- Read [Visual attention variants](https://magazine.sebastianraschka.com/p/visual-attention-variants)
+**DUE September 25**
 
 Read these articles/papers:
-- Transformer chapter in *Understanding Deep Learning*
+- *Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention*
 - *A Practical Review of mechanistic interpretability for transformer-based language models*
 - *Decoupled Weight Decay Regularization*
 - *Stochastic Gradient Descent with Warm Restarts*

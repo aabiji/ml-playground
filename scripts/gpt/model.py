@@ -1,22 +1,3 @@
-"""
-- Implement the following improvements to gpt script:
-  - Port from jupyter notebook to regular python script. Make GPT its own seperate project.
-
-  - Implement ROPE instead of using learned positional encodings.
-
-  - Implement Linear Attention, that should improve performance and increase the number of steps I can train for.
-
-  - Mask out EOS tokens as well. I wasn't doing that before so the model was treating EOS tokens as valid symbols.
-
-  - Switch to character based tokenization and switch to using Karpathy's Shakespear dataset. The vocabulary size
-    should be proportional to the dataset -> large vocab with small dataset size means overfitting on specific tokens
-    and terrible performance.
-
-  - Retry the inference demo to see if the changes have made any qualitative differences.
-"""
-
-from datasets import load_dataset
-import tiktoken
 import torch
 import humanize
 import torch.nn as nn
@@ -34,38 +15,29 @@ def ensure_file(file_path):
   Path(base_path).mkdir(parents=True, exist_ok=True)
   return file_path
 
-def get_line_stats(batch, tokenizer):
-  tokens_batch = []
-  length_batch = []
-  for row in batch["text"]:
-    tokens = tokenizer.encode(row, allowed_special={"<|endoftext|>"})
-    tokens_batch.append(tokens)
-    length_batch.append(len(tokens))
-  return {"tokens": tokens_batch, "length": length_batch}
 
-def prepare_dataset(name, cache_file, tokenizer, pad_token, seq_len):
-  # Load the dataset and gather token lengths
-  dataset = load_dataset(name, split="train")
-  dataset = dataset.map(
-    lambda b: get_line_stats(b, tokenizer),
-    batched=True,
-    remove_columns=["text"]
-  )
+def load_dataset(path, cache_file, eos_token):
+  def process(line):
+    encoded = list(line.encode("utf-8"))
+    encoded.append(eos_token)
+    return encoded
 
-  # Pad each token sequence into a fixed size
-  max_len = max(dataset["length"]) + 1
-  nearest_multiple = ((max_len // seq_len) + 1) * seq_len if max_len % seq_len != 0 else max_len
-  shape = (len(dataset), nearest_multiple)
+  try:
+    return torch.load(cache_file)
+  except:
+    sequences = []
+    with open(path, "r") as txt_file:
+      lines = txt_file.read().split("\n")
+      sequences = [process(line) for line in lines if len(line) > 0]
 
-  padded = torch.full(shape, pad_token, dtype=torch.int)
-  for i, tokens in enumerate(dataset["tokens"]):
-    padded[i, :len(tokens)] = torch.tensor(tokens, dtype=torch.int)
+    max_seq_len = max(map(lambda s: len(s), sequences))
+    padded = torch.full((len(sequences), max_seq_len), eos_token, dtype=torch.int)
+    for i, sequence in enumerate(sequences):
+      padded[i, :len(sequence)] = torch.tensor(sequence, dtype=torch.int)
 
-  # Split each sequence into chunks and cache them
-  num_chunks = padded.shape[1] // seq_len
-  chunks = torch.chunk(padded, chunks=num_chunks, dim=1)
-  torch.save(chunks, cache_file)
-  return chunks[0].shape[0], chunks
+    torch.save(padded, cache_file)
+    return padded
+
 
 def init_weights(module):
   if isinstance(module, nn.Linear):
@@ -73,9 +45,22 @@ def init_weights(module):
     if module.bias is not None:
       nn.init.constant_(module.bias, 0.0)
 
+
 def paramtensor(size, scale, residual_scale=1.0):
   total_scale = scale * residual_scale
   return nn.Parameter(torch.randn(*size) * total_scale)
+
+
+def custom_learning_rate(step, hp):
+  ws, ts = hp["warmup_steps"], hp["train_steps"]
+
+  # Linear warmup phase
+  if step < ws:
+    return float(step) / float(max(1, ws))
+
+  # Cosine decay phase
+  progress = float(step - ws) / float(max(1, ts - ws))
+  return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 class Decoder(nn.Module):
   # B x T x E input and output, where B is the batch size, T is the token
@@ -133,16 +118,25 @@ class Decoder(nn.Module):
     norm_x2 = self.norm2(x)
     return self.ffn(norm_x2) + x
 
+
 class Transformer(nn.Module):
   # B x T input and B x T x V output, where B is the batch size, T is the token
   # sequence length. Each token is an index into the vocabulary (V).
   def __init__(self, V, E, T, H, D_k, D_f, L, device):
     super().__init__()
     # Embeddings: B x T -> B x T x E, where E is the embedding dimension
-    kaiming_scale = math.sqrt(2.0 / E)
-    self.tok_embed = paramtensor((V, E), kaiming_scale)
-    self.pos_embed = paramtensor((T, E), kaiming_scale)
+    self.tok_embed = paramtensor((V, E), math.sqrt(2.0 / E))
     self.E_scale = math.sqrt(E)
+
+    # Cached values for rotary positional encoding
+    theta = 10000 ** ((-2 * torch.arange(E // 2, device=device)) / E)
+    theta = torch.repeat_interleave(theta, repeats=2)
+    angles = torch.arange(T, device=device)[:, None] * theta
+    self.cos_angles = torch.cos(angles)
+    self.sin_angles = torch.sin(angles)
+    self.signs = ((-1) ** torch.arange(1, E + 1, device=device)).expand(T, -1)
+    idx = torch.arange(E, device=device)
+    self.alt_idx = idx ^ 1
 
     # Share the same causal mask for all decoders to save memory
     temp = torch.full((T, T), float("-inf"), device=device)
@@ -151,15 +145,24 @@ class Transformer(nn.Module):
     # Transformer decoder layers are referred to as decoders because of their
     # auto-regressive masked self-attention, not because of their structure.
     self.layers = nn.ModuleList([Decoder(E, H, D_k, D_f, L) for _ in range(L)])
-
     self.final_norm = nn.LayerNorm(E)
 
-  def forward(self, x):
+  def forward(self, x, eos_token):
+    # Mask out end of sequence tokens that serve as padding
+    idx = (x == eos_token).int().argmax(dim=1)
+    positions = torch.arange(x.shape[-1], device=x.device)
+    valid_keys = positions[None, :] <= idx[:, None]
+    eos_mask = torch.where(valid_keys[:, None, None, :], 0.0, float("-inf"))
+
     # Each token selects a row from the learned token embedding matrix.
-    embeddings = self.tok_embed[x] * self.E_scale + self.pos_embed
+    embeddings = self.tok_embed[x] * self.E_scale
+
+    # Rotary position encoding using cached constants
+    embeddings = embeddings * self.cos_angles + \
+      embeddings[:, :, self.alt_idx] * self.signs * self.sin_angles
 
     for layer in self.layers:
-      embeddings = layer(embeddings, self.causal_mask)
+      embeddings = layer(embeddings, self.causal_mask[None, None, :, :] + eos_mask)
     embeddings = self.final_norm(embeddings)
 
     # Convert embeddings back into tokens by creating a B x T x V logit matrix. During
@@ -167,139 +170,104 @@ class Transformer(nn.Module):
     # token will be minimized. During inference, the next most probable token will be selected.
     return embeddings @ self.tok_embed.T
 
-dataset_name = "BabyLM-community/BabyLM-2026-Strict-Small"
-data_cache_file = ensure_file(".cache/prepared-dataset.pth")
-model_cache_file = ensure_file(".cache/model-weights.pth")
-hyperparams = {
-  "embedding_dim": 512, "num_attn_heads": 12, "attn_dim": 64,
-  "ffn_dim": 2048, "seq_len": 512, "num_layers": 12, "batch_size": 16,
-  "train_steps": 1000, "warmup_steps": 300, "test_steps": 10,
-  "train_split": 0.5
-}
-experiment_name = "Tiny GPT"
 
-# EOS token = Pad token to minimize the vocab size
-tokenizer = tiktoken.encoding_for_model("gpt2")
-eos_token = tokenizer.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})[0]
+# Since the target dataset is so small, character level tokenization is used
+hp = {
+  "embedding_dim": 1024, "num_attn_heads": 16, "attn_dim": 64,
+  "ffn_dim": 2048, "seq_len": 64, "num_layers": 12, "batch_size": 32,
+  "train_steps": 1000, "warmup_steps": 300, "test_steps": 100,
+  "train_split": 0.6, "eos_token": 256, "vocab_size": 257,
+  "lr": 3e-5, "betas": (0.9, 0.98), "eps": 1e-8
+}
+
+data_cache_file = ensure_file(".data/prepared-dataset.pth")
+model_cache_file = ensure_file(".data/model-weights.pth")
+dataset_path = ensure_file("/kaggle/input/datasets/abigailadegbiji/karpathy-char-rnn/karpathy-char-rnn-input.txt")
+sequences = load_dataset(dataset_path, data_cache_file, hp["eos_token"])
+total_rows = sequences.shape[0]
+train_split = int(hp["train_split"] * total_rows)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = Transformer(
-  tokenizer.n_vocab,
-  hyperparams["embedding_dim"],
-  hyperparams["seq_len"],
-  hyperparams["num_attn_heads"],
-  hyperparams["attn_dim"],
-  hyperparams["ffn_dim"],
-  hyperparams["num_layers"],
-  device
-).to(device)
+  hp["vocab_size"], hp["embedding_dim"], hp["seq_len"],
+  hp["num_attn_heads"], hp["attn_dim"], hp["ffn_dim"], hp["num_layers"], device).to(device)
 model.apply(init_weights)
+
 num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-try:
-  chunks = torch.load(data_cache_file)
-  total_rows = chunks[0].shape[0]
-except:
-  total_rows, chunks = prepare_dataset(dataset_name, data_cache_file,
-                           tokenizer, eos_token, hyperparams["seq_len"])
-
-train_split = int(hyperparams["train_split"] * total_rows)
 print(f"Using {device} to train a {humanize.intword(num_params)} parameter model.")
-def custom_learning_rate(step):
-  ws, ts = hyperparams["warmup_steps"], hyperparams["train_steps"]
 
-  # Linear warmup phase
-  if step < ws:
-    return float(step) / float(max(1, ws))
 
-  # Cosine decay phase
-  progress = float(step - ws) / float(max(1, ts - ws))
-  return 0.5 * (1.0 + math.cos(math.pi * progress))
-
+# Training loop
 model.train()
-torch.enable_grad()
-
-optimizer = AdamW(model.parameters(), lr=3e-5, betas=(0.9, 0.98), eps=1e-9)
+optimizer = AdamW(model.parameters(), lr=hp["lr"], betas=hp["betas"], eps=hp["eps"])
+scheduler = LambdaLR(optimizer, lambda x: custom_learning_rate(x, hp))
 criterion = nn.CrossEntropyLoss()
-scheduler = LambdaLR(optimizer, custom_learning_rate)
 
 fig, ax = plt.subplots()
 step_losses = []
 
-# Training loop
-for step in range(hyperparams["train_steps"]):
-  indices = torch.randint(low=0, high=train_split, size=(hyperparams["batch_size"],))
-  chunk_losses = []
-
-  for j in range(len(chunks)):
-    # The correct next token is the sequence shifted to the left
-    rows = chunks[j][indices].to(device)
-    target = torch.full(rows.shape, eos_token, dtype=torch.long, device=device)
-    target[:, :-1] = rows[:, 1:]
+with torch.enable_grad():
+  for step in range(hp["train_steps"]):
+    indices = torch.randint(low=0, high=train_split, size=(hp["batch_size"],))
+    rows = sequences[indices].to(device)
+    target = rows[:, 1:].long() # The correct next token is the sequence shifted to the left
 
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
-      prediction = model(rows)
-      # Flatten tensors to make CrossEntropyLoss work well:
-      # prediction: B x T x V -> B * T x V, target: B x T -> 1 x B * T
-      loss = criterion(
-        prediction.reshape(-1, prediction.shape[-1]),
-        target.reshape(-1)
-      )
+      prediction = model(rows, hp["eos_token"])
+      prediction = prediction[:, :-1]
 
-    chunk_losses.append(loss.item())
-    (loss / len(chunks)).backward() # Average the loss across chunks
+      eos_positions = (rows == hp["eos_token"]).long().argmax(dim=1)
+      positions = torch.arange(rows.shape[1] - 1, device=device)
+      loss_mask = positions[None, :] < eos_positions[:, None]
+      loss = criterion(prediction[loss_mask], target[loss_mask])
 
-  # Average gradients across different chunks of the same sequence
-  optimizer.step()
-  optimizer.zero_grad(set_to_none=True)
-  scheduler.step()
+    step_losses.append(loss.item())
+    loss.backward()
 
-  # Plot a loss curve in real time
-  mean_loss = sum(chunk_losses) / len(chunk_losses)
-  step_losses.append(mean_loss)
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    scheduler.step()
 
-  clear_output(wait=True)
-  ax.clear()
-  ax.plot(step_losses, "r-")
-  ax.autoscale_view(scalex=True, scaley=True)
-  fig.suptitle(experiment_name, fontsize=14, fontweight="bold")
-  ax.set_title(f"Mean loss: {mean_loss:.2f}")
-  ax.set_xlabel("Step")
-  ax.set_ylabel("Loss")
+    # Plot a loss curve in real time
+    clear_output(wait=True)
+    ax.clear()
+    ax.plot(step_losses, "r-")
+    ax.autoscale_view(scalex=True, scaley=True)
+    fig.suptitle("Loss Curve", fontsize=14, fontweight="bold")
+    ax.set_title(f"Mean loss: {step_losses[-1]:.2f}")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Loss")
 
-  fig.tight_layout() # Prevents overlapping labels
-  display.display(fig)
+    fig.tight_layout() # Prevents overlapping labels
+    display.display(fig)
 
-torch.save(model.state_dict(), model_cache_file)
-fig.savefig(f"{experiment_name}.png", dpi=300, bbox_inches="tight")
+  torch.save(model.state_dict(), model_cache_file)
+  fig.savefig("plot.png", dpi=300, bbox_inches="tight")
 
+
+# Test loop
 model.eval()
 torch.set_grad_enabled(False)
 
-# Test loop
 test_losses = []
-for _ in range(hyperparams["test_steps"]):
-  indices = torch.randint(low=train_split, high=total_rows, size=(hyperparams["batch_size"],))
-  chunk_losses = []
+for _ in range(hp["test_steps"]):
+  indices = torch.randint(low=train_split, high=total_rows, size=(hp["batch_size"],))
+  rows = sequences[indices].to(device)
+  target = rows[:, 1:].long() # The correct next token is the sequence shifted to the left
 
-  for j in range(len(chunks)):
-    rows = chunks[j][indices].to(device)
-    target = torch.full(rows.shape, eos_token, dtype=torch.long, device=device)
-    target[:, :-1] = rows[:, 1:]
+  with torch.autocast(device_type=device, dtype=torch.bfloat16):
+    prediction = model(rows, hp["eos_token"])
+    prediction = prediction[:, :-1]
 
-    with torch.autocast(device_type=device, dtype=torch.bfloat16):
-      prediction = model(rows)
-      loss = criterion(
-        prediction.reshape(-1, prediction.shape[-1]),
-        target.reshape(-1)
-      )
+    eos_positions = (rows == hp["eos_token"]).long().argmax(dim=1)
+    positions = torch.arange(rows.shape[1] - 1, device=device)
+    loss_mask = positions[None, :] < eos_positions[:, None]
 
-    chunk_losses.append(loss.item())
-
-  test_losses.append(sum(chunk_losses) / len(chunk_losses))
+    loss = criterion(prediction[loss_mask], target[loss_mask])
+    test_losses.append(loss.item())
 
 print("Mean test loss:", sum(test_losses) / len(test_losses))
-torch.set_grad_enabled(True)
+
 
 # Simple inference demo:
 # It's clear that tiny models trained on tiny datasets have very poor performance. The real magic happens at scale.
@@ -307,25 +275,32 @@ state_dict = torch.load(model_cache_file,
   weights_only=True, map_location=torch.device(device))
 model.load_state_dict(state_dict)
 
-size = (4, )
-sequences = chunks[0][torch.randint(train_split, total_rows, size)]
-prediction = torch.softmax(model(sequences), dim=-1)
-sampled = torch.argmax(model(sequences), dim=-1) # Greedy decoding
+num_examples = (4, )
+rows = sequences[torch.randint(train_split, total_rows, num_examples)]
+prediction = torch.softmax(model(rows, hp["eos_token"]), dim=-1)
+sampled = torch.argmax(prediction, dim=-1) # Greedy decoding
 
-eos_mask = sequences == eos_token
+eos_mask = rows == hp["eos_token"]
 seq_lengths = torch.argmax(eos_mask.to(torch.int32), dim=-1)
 has_value = eos_mask.any(dim=-1)
-seq_lengths[~has_value] = sequences.shape[-1]
+seq_lengths[~has_value] = rows.shape[-1]
 
 print("====Input sequences:====")
 length_mask = \
-  torch.arange(sequences.shape[-1], device=device) < seq_lengths[:, None]
-outputs = torch.split(sequences[length_mask], seq_lengths.tolist())
+  torch.arange(rows.shape[-1], device=device) < seq_lengths[:, None]
+outputs = torch.split(rows[length_mask], seq_lengths.tolist())
 for seq in outputs:
-  print(tokenizer.decode(seq.tolist()))
+  values = seq.tolist()
+  tokens = values[:values.index(hp["eos_token"])]
+  print(bytes(tokens).decode("utf-8"))
 
 print("\n====Next tokens:====")
-rows = torch.arange(sequences.shape[0])
-next_token_ids = sampled[rows, seq_lengths - 2] # Token IDs are 1-indexed
-for token_id in next_token_ids:
-  print(tokenizer.decode([token_id.item()]))
+idx = torch.arange(rows.shape[0])
+next_token_ids = sampled[idx, seq_lengths - 2] # Token IDs are 1-indexed
+for seq in next_token_ids:
+  values = seq.tolist()
+  tokens = values[:values.index(hp["eos_token"])]
+  print(bytes(tokens).decode("utf-8"))
+
+torch.set_grad_enabled(True)
+
