@@ -1,43 +1,48 @@
-# Read
-- An image is worth 16x16 words: Transformers for image recognition at scale
-- ViT-5: Vision Transformers for The Mid-2020s
-- Rotary Position Embedding for Vision Transformer
-- Training data-efficient image transformers & distillation through attention
-- Emerging Properties in Self-Supervised Vision Transformers
-- Mamba: Linear-Time Sequence Modeling with Selective State Spaces
-
 # Implementation
-- Original ViT model and the ViT-5 model - compare inference performance between the architectures.
-  What's the magnitude of the improvement the architectural changes provide?
-
 - Use model checkpoints to train over several runs.
 
-- Plot text progress bar instead of plotting loss each step, only plot loss at the end
-
-- Data augmentation techniques: random flipping, random rotation, random crop out, random gaussian noise, random noise, random zoom
-  - Note that augmentation adds more images to the dataset
-  - Visualize the effects of data augmentation
-
 - Inference demos:
+  - Visualize the most relevant parts of an image given the attention weights
   - Show general accuracy, show image, display top 5 model predictions, display the actual prediction, press space to choose another random image
   - Show general accuracy, show image, overlay predicted segmentation mask, overlay the actual segmentation mask, press space to change to another random image
 
-# Experiments
-- Visualize positional embeddings. Visualize the attention scores. Visualize the embedding filters.
-  What are some interesting patterns?
+# Ideas
+- Visualize and see if there any patterns:
+  - Positional embeddings
+  - Attention scores
+  - Embedding filters
 
-- Why GeLU? Does it offer substancial performance improvements over ReLU?
+- Pretrain a Vit on CIFAR10:
+  - Fine tune on ImageNet. That would increase the image resolution from 32x32 to 224x224,
+    and that would also change the number of labels, from 10 to 1000.
+    Will this attempt at transfer learning result in improved classification performance.
 
-- Can we fine tune a ViT that was originally trained on a classification task on a segmentation task? Kind of like how GPT-2 was pretrained
-  using next token prediction then different heads were used? Or will the lack of learned localization hinder progress?
+  - Replace the classification head with a segmentation head. Then, fine-tune on COCO minitrain.
+    This is inspired by the way that different heads could be swapped out for different tasks in GPT-2.
+    Will the lack of localized semantic understand hinger performance, or can localization be learned
+    quickly if there's already a semantic understanding?
+    - Experiment with pixel based cross-entropy loss, DICE loss or Jaccard loss to see which is most effective
 
-- Which loss function is most effective for segmentation? Pixel based cross entropy loss, DICE loss, or Jaccard loss?
+- Implement the improvements proposed in ViT-5 and compare performance with the base ViT model
 
-- Visualize the model's prediction on a medical dataset to better see how training loss correlates with qualitative performance.
+- Read the knowledge distillation paper and see if a large pretrained ViT model
+  (download the weights from somewhere else), can be distilled into a 100 M (at most) param model.
 
-# Next steps
-- Mamba for images??
+# Notes
+**(Touvron et al., 2020)**
+- (Touvron et al., 2019) show that it's desirable to use a lower image resolution during training and a higher image
+  resolution during fine tuning. Positional embeddings are thus interpolated to accomodate the larger token sequence.
+- Interesting that they didn't find Dropout to be useful. They used 300 epochs, 1024 batch size, AdamW optimizer,
+  0.0001 learning rate, cosine learning rate decay, 0.05 weight decay, 5 warmup epochs, 0.1 label smoothing.
 
-- Learn about DINO to see if I can replicate their core result.
+**(Wang et al., 2025)**
 
-- Look into VAEs
+# Progress
+September 26, 2026:
+- Read *An Image is Worth 16x16 words: Transformers for image recognition at scale*
+- Implemented a basic version of the original ViT: MSA, transformer layers
+- Loaded and visualized the CIFAR10 dataset, and converted images into patches
+- Need to read *ViT-5: Vision Transformers for The Mid-2020s* to get better of what training recipe I should use
+
+September 28, 2026:
+- Read *Training data-efficient image transformers & distillation through attention*

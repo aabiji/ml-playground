@@ -3,10 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.datasets import CIFAR10
-from torchvision.transforms import transforms
+from torchvision.transforms import v2
 import matplotlib.pyplot as plt
 
-"""
 def plot_training_progress(num_steps, total_steps, loss, bar_length):
   num_bars = float(num_steps) * bar_length / (total_steps - 1)
   progress_bar = '█' * int(num_bars) + ' ' * int(bar_length - num_bars)
@@ -14,6 +13,15 @@ def plot_training_progress(num_steps, total_steps, loss, bar_length):
   steps_count = f"{num_steps + 1} / {total_steps} steps"
   print(f"{steps_count} | [{progress_bar}] | Loss: {loss} \033[K", end=end, flush=True)
 
+def patchify_img(img_batch, B, C, P, G):
+  # Convert image into a sequence of patches
+  patches = img_batch.unfold(2, P, P).unfold(3, P, P)
+  patches = patches.contiguous().view(B, C, G ** 2, P, P)
+  patches = patches.permute(0, 2, 3, 4, 1)
+  patches = patches.flatten(start_dim=2, end_dim=4)
+  return patches
+
+"""
 def change_img_view(event, fig, ax, ax_img, loader):
   if event.key != " ":
     return
@@ -36,19 +44,16 @@ fig.canvas.mpl_connect(
   "key_press_event",
   lambda ev: change_img_view(ev, fig, ax, ax_img, test_loader))
 plt.show()
-
-# TODO: how to initialize embeddings and parameters in this model
 """
 
 class MSA(nn.Module):
-  def __init__(self, attn_heads, embed_dim, dropout):
+  def __init__(self, attn_heads, embed_dim):
     super().__init__()
     self.Q_proj = nn.Parameter(torch.rand(embed_dim, embed_dim))
     self.K_proj = nn.Parameter(torch.rand(embed_dim, embed_dim))
     self.V_proj = nn.Parameter(torch.rand(embed_dim, embed_dim))
     self.O_proj = nn.Parameter(torch.rand(embed_dim, embed_dim))
     self.attn_softmax = nn.Softmax(dim=-1)
-    self.attn_dropout = nn.Dropout(p=dropout)
     self.H = attn_heads
 
   # Input and output shape: (B, N + 1, D)
@@ -62,86 +67,94 @@ class MSA(nn.Module):
     V = (x @ self.V_proj).view((B, N, self.H, D // self.H)).permute(0, 2, 1, 3)
 
     scores = (Q @ K.permute(0, 1, 3, 2)) * sqrt_dmodel
-    scores = self.attn_dropout(self.attn_softmax(scores))
-
-    output = (scores @ V).permute(0, 2, 1, 3).reshape(B, N, D)
+    output = self.attn_softmax(scores) @ V
+    output = output.permute(0, 2, 1, 3).reshape(B, N, D)
     return output @ self.O_proj
 
-
 class ViT(nn.Module):
-  def __init__(self, patch_size, grid_size, channels,
-               embed_dim, mlp_dim, layers, attn_heads, dropout):
+  def __init__(self, patch_size, grid_size, channels, embed_dim,
+               layers, attn_heads, num_classes):
     super().__init__()
     size = channels * patch_size * patch_size
-    count = grid_size * grid_size + 1 
+    elements = grid_size * grid_size + 1
 
-    self.cls_token = nn.Parameter(torch.zeros(embed_dim))
+    self.class_token = nn.Parameter(torch.zeros(embed_dim))
     self.embed_filters = nn.Parameter(torch.zeros(size, embed_dim))
-    self.pos_embed = nn.Parameter(torch.zeros(count, embed_dim))
+    self.pos_embed = nn.Parameter(torch.zeros(elements, embed_dim))
 
     self.layers = nn.ModuleList([
       nn.ModuleList([
         nn.LayerNorm(embed_dim),
-        MSA(attn_heads, embed_dim, dropout),
+        MSA(attn_heads, embed_dim),
         nn.LayerNorm(embed_dim),
         nn.Sequential(
-          nn.Linear(count * embed_dim, mlp_dim),
+          nn.Linear(embed_dim, embed_dim * 4),
           nn.GELU(),
-          nn.Linear(mlp_dim, count * embed_dim)),
+          nn.Linear(embed_dim * 4, embed_dim)),
       ])
       for _ in range(layers)
     ])
 
-    self.cls_norm = nn.LayerNorm(embed_dim)
+    self.class_norm = nn.LayerNorm(embed_dim)
+    self.class_proj = nn.Linear(embed_dim, num_classes)
 
-  # P = patch size, N = patch count, C = channel count, B = batch size
-  # Input shape: (B, N, P * P * C), output shape: (B, D)
+  # P = patch size, N = patch count, C = channel count
+  # B = batch size, O = number of output classes
+  # Input shape: (B, N, P * P * C), output shape: (B, O)
   def forward(self, x):
     embeddings = x @ self.embed_filters
     B, N, D = embeddings.shape
 
     tokens = torch.zeros(B, N + 1, D)
-    tokens[:, 0] = self.cls_token
+    tokens[:, 0] = self.class_token
     tokens[:, 1:] = embeddings
     z = tokens + self.pos_embed
- 
-    # TODO: are all tokens flattened into one before being passed into mlp or is each token processed in parllel? parlell, right? 
+
     for layer in self.layers:
       prev_norm, msa, msa_norm, mlp = layer
       z1 = msa(prev_norm(z)) + z
+      z = mlp(msa_norm(z1)) + z1
 
-      mlp_in = msa_norm(z1).flatten(start_dim=1)
-      z = mlp(mlp_in) + z1
+    class_token = self.class_norm(z[:, 0])
+    return self.class_proj(class_token)
 
-    return self.cls_norm(z[0])
-
+torch.manual_seed(67)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 hp = {
-  "batch_size": 64, "patch_size": 8, "embedding_dim": 256, "mlp_dim": 512,
-  "attn_heads": 8, "attn_dropout": 0.5, "layers": 8,
+  "batch_size": 64, "embedding_dim": 256, "attn_heads": 8,
+  "layers": 8, "num_classes": 10, "img_size": 32, "patch_size": 8,
 }
 
-pipeline = transforms.Compose([
-  transforms.ToTensor(),
-  transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) # [0, 255] -> [-1, 1]
+load_pipeline = v2.Compose([
+  v2.RGB(), v2.ToImage(),
+  v2.ToDtype(torch.float32, scale=True), v2.Resize(size=(32, 32)),
+  v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) # [0, 255] -> [-1, 1]
+])
+
+augment_pipeline = v2.Compose([
+  v2.RGB(), v2.ToImage(),
+  v2.ToDtype(torch.float32, scale=True), v2.Resize(size=(32, 32)),
+  v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)), # [0, 255] -> [-1, 1]
+  v2.RandomHorizontalFlip(),
+  v2.RandomRotation(90),
+  v2.RandomErasing(p=0.3),
 ])
 
 classes = ["plane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
-train_dataset = CIFAR10(root=".cache/train/cifar10", train=True, download=True, transform=pipeline)
+train_dataset = CIFAR10(root=".cache/train/cifar10", train=True,
+                        download=True, transform=augment_pipeline)
 train_loader = DataLoader(train_dataset, batch_size=hp["batch_size"], shuffle=True)
 
 images, labels = next(iter(train_loader)) # (B, C, H, W)
+images, labels = images.to(device), labels.to(device)
 
-B, C, H, _ = images.shape
-P, G = hp["patch_size"], H // hp["patch_size"]
+patches = patchify_img(
+  images, images.shape[0], images.shape[1], hp["patch_size"], hp["img_size"] // hp["patch_size"])
 
-# Convert image into a sequence of patches
-patches = images.unfold(2, P, P).unfold(3, P, P)
-patches = patches.contiguous().view(B, C, G ** 2, P, P)
-patches = patches.permute(0, 2, 3, 4, 1)
-patches = patches.flatten(start_dim=2, end_dim=4)
+model = ViT(
+  hp["patch_size"], hp["img_size"] // hp["patch_size"], images.shape[1],
+  hp["embedding_dim"], hp["layers"], hp["attn_heads"], hp["num_classes"]).to(device)
 
-model = ViT(P, G, C, hp["embedding_dim"], hp["mlp_dim"],
-            hp["layers"], hp["attn_heads"], hp["attn_dropout"])
 cls_embedding = model(patches)
 print(cls_embedding.shape)
