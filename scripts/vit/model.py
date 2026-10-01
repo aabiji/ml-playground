@@ -26,7 +26,7 @@ def log_training_progress(batch_idx, epoch, total_epochs, loss, bar_length, load
   num_bars = progress * bar_length
   progress_bar = '█' * int(num_bars) + ' ' * int(bar_length - num_bars)
   end = "\n" if num_bars == bar_length else "\r"
-  info = f"Batch {batch_idx + 1} / {num_batches} | Epoch {epoch} / {total_epochs}"
+  info = f"Batch {batch_idx + 1} / {num_batches} | Epoch {epoch + 1} / {total_epochs}"
   print(f"{info} | [{progress_bar}] | Loss: {loss:.3f} \033[K", end=end, flush=True)
 
 def plot_curve(data, title, x_label, y_label, output_path):
