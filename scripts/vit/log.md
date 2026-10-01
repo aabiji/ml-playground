@@ -1,15 +1,13 @@
 # Implementation
-- Use model checkpoints to train over several runs.
+- Use model checkpoints to train over several runs. Consider loading a pretrained ViT in order to focus on fine-tuning.
 
 - Inference demos:
-  - Visualize the most relevant parts of an image given the attention weights
   - Show general accuracy, show image, display top 5 model predictions, display the actual prediction, press space to choose another random image
   - Show general accuracy, show image, overlay predicted segmentation mask, overlay the actual segmentation mask, press space to change to another random image
 
 # Ideas
 - Visualize and see if there any patterns:
   - Positional embeddings
-  - Attention scores
   - Embedding filters
 
 - Pretrain a Vit on CIFAR10:
@@ -49,3 +47,7 @@ September 28, 2026:
 - Small improvements on the model
 
 September 30, 2026:
+- Finished implementing the core trianing loop
+- Visualized image patches and attention scores
+- **How can we visualize the Q, K, V, O projections and the positional embeddings?**
+  given that they are very high dimensional
