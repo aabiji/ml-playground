@@ -1,0 +1,12 @@
+# Tiny base model for testing
+epochs          = 7
+batch_size      = 64
+learning_rate   = 1e-3
+betas           = [0.9, 0.999]
+label_smoothing = 0.1
+img_size        = 32
+embedding_dim   = 256
+patch_size      = 8
+attn_heads      = 8
+layers          = 8
+classes         = ["plane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]

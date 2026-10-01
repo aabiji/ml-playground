@@ -46,3 +46,6 @@ September 26, 2026:
 
 September 28, 2026:
 - Read *Training data-efficient image transformers & distillation through attention*
+- Small improvements on the model
+
+September 30, 2026:

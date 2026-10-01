@@ -1,17 +1,43 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from torchvision.datasets import CIFAR10
 from torchvision.transforms import v2
 import matplotlib.pyplot as plt
+import math, tomllib, sys
 
-def plot_training_progress(num_steps, total_steps, loss, bar_length):
-  num_bars = float(num_steps) * bar_length / (total_steps - 1)
+def load_model_hyperparams():
+  if len(sys.argv) != 2:
+    print("This script requires one path to a toml file listing model hyperparameters.")
+    sys.exit()
+
+  filename = sys.argv[1]
+  with open(filename, "rb") as file:
+    data = tomllib.load(file)
+  return data
+
+def log_training_progress(batch_idx, epoch, total_epochs, loss, bar_length, loader):
+  num_batches = math.ceil(len(loader.dataset) / loader.batch_size)
+  batch_count = epoch * num_batches + batch_idx
+  progress = batch_count / (total_epochs * num_batches)
+  num_bars = progress * bar_length
   progress_bar = '█' * int(num_bars) + ' ' * int(bar_length - num_bars)
   end = "\n" if num_bars == bar_length else "\r"
-  steps_count = f"{num_steps + 1} / {total_steps} steps"
-  print(f"{steps_count} | [{progress_bar}] | Loss: {loss} \033[K", end=end, flush=True)
+  info = f"Batch {batch_idx + 1} / {num_batches} | Epoch {epoch} / {total_epochs}"
+  print(f"{info} | [{progress_bar}] | Loss: {loss:.3f} \033[K", end=end, flush=True)
+
+def plot_curve(data, title, x_label, y_label, output_path):
+  fig, ax = plt.subplots()
+  ax.set_title(title)
+  ax.set_xlabel(x_label)
+  ax.set_ylabel(y_label)
+  ax.plot(data, "b-")
+  fig.tight_layout()
+  fig.savefig(output_path, bbox_inches="tight")
+  plt.show()
 
 def patchify_img(img_batch, B, C, P, G):
   # Convert image into a sequence of patches
@@ -54,28 +80,27 @@ class MSA(nn.Module):
     self.V_proj = nn.Parameter(torch.rand(embed_dim, embed_dim))
     self.O_proj = nn.Parameter(torch.rand(embed_dim, embed_dim))
     self.attn_softmax = nn.Softmax(dim=-1)
+    self.variance_scale = 1 / math.sqrt(embed_dim // attn_heads)
     self.H = attn_heads
 
   # Input and output shape: (B, N + 1, D)
   # D = embedding dimension, H = number of attention heads
   def forward(self, x):
     B, N, D = x.shape
-    sqrt_dmodel = 1 / torch.sqrt(torch.tensor(D // self.H)).item()
-
     Q = (x @ self.Q_proj).view((B, N, self.H, D // self.H)).permute(0, 2, 1, 3)
     K = (x @ self.K_proj).view((B, N, self.H, D // self.H)).permute(0, 2, 1, 3)
     V = (x @ self.V_proj).view((B, N, self.H, D // self.H)).permute(0, 2, 1, 3)
 
-    scores = (Q @ K.permute(0, 1, 3, 2)) * sqrt_dmodel
+    scores = (Q @ K.permute(0, 1, 3, 2)) * self.variance_scale
     output = self.attn_softmax(scores) @ V
     output = output.permute(0, 2, 1, 3).reshape(B, N, D)
     return output @ self.O_proj
 
+
 class ViT(nn.Module):
-  def __init__(self, patch_size, grid_size, channels, embed_dim,
-               layers, attn_heads, num_classes):
+  def __init__(self, patch_size, grid_size, embed_dim, layers, attn_heads, num_classes):
     super().__init__()
-    size = channels * patch_size * patch_size
+    size = 3 * patch_size * patch_size
     elements = grid_size * grid_size + 1
 
     self.class_token = nn.Parameter(torch.zeros(embed_dim))
@@ -120,11 +145,7 @@ class ViT(nn.Module):
 
 torch.manual_seed(67)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-hp = {
-  "batch_size": 64, "embedding_dim": 256, "attn_heads": 8,
-  "layers": 8, "num_classes": 10, "img_size": 32, "patch_size": 8,
-}
+hp = load_model_hyperparams()
 
 load_pipeline = v2.Compose([
   v2.RGB(), v2.ToImage(),
@@ -141,20 +162,41 @@ augment_pipeline = v2.Compose([
   v2.RandomErasing(p=0.3),
 ])
 
-classes = ["plane", "car", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
 train_dataset = CIFAR10(root=".cache/train/cifar10", train=True,
                         download=True, transform=augment_pipeline)
 train_loader = DataLoader(train_dataset, batch_size=hp["batch_size"], shuffle=True)
 
-images, labels = next(iter(train_loader)) # (B, C, H, W)
-images, labels = images.to(device), labels.to(device)
-
-patches = patchify_img(
-  images, images.shape[0], images.shape[1], hp["patch_size"], hp["img_size"] // hp["patch_size"])
-
 model = ViT(
-  hp["patch_size"], hp["img_size"] // hp["patch_size"], images.shape[1],
-  hp["embedding_dim"], hp["layers"], hp["attn_heads"], hp["num_classes"]).to(device)
+  hp["patch_size"], hp["img_size"] // hp["patch_size"],
+  hp["embedding_dim"], hp["layers"], hp["attn_heads"], len(hp["classes"])
+).to(device)
 
-cls_embedding = model(patches)
-print(cls_embedding.shape)
+optimizer = AdamW(model.parameters(), lr=hp["learning_rate"], betas=hp["betas"])
+scheduler = CosineAnnealingLR(optimizer, T_max=hp["epochs"])
+criterion = nn.CrossEntropyLoss(label_smoothing=hp["label_smoothing"])
+losses = []
+
+for epoch in range(hp["epochs"]):
+  for i, (images, labels) in enumerate(train_loader):
+    # Images shape: (B, C, H, W), Patches shape: (B, N, P, P, C)
+    images, labels = images.to(device), labels.to(device)
+    patches = patchify_img(
+      images, images.shape[0],
+      images.shape[1], hp["patch_size"],
+      hp["img_size"] // hp["patch_size"]
+    )
+
+    class_embeddings = model(patches)
+    loss = criterion(class_embeddings, labels)
+
+    losses.append(loss.item())
+    log_training_progress(i, epoch, hp["epochs"], loss.item(), 50, train_loader)
+
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=False)
+
+  scheduler.step()
+
+plot_curve(losses, "Training loss", "Loss", "Batches", "train_loss_sample.png")
+torch.save(model.state_dict(), ".cache/model-weights.pth")
