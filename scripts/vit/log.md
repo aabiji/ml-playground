@@ -4,10 +4,6 @@
   - Show general accuracy, show image, overlay predicted segmentation mask, overlay the actual segmentation mask, press space to change to another random image
 
 # Ideas
-- Visualize and see if there any patterns:
-  - Positional embeddings
-  - Embedding filters
-
 - Pretrain a Vit on CIFAR10:
   - Fine tune on ImageNet. That would increase the image resolution from 32x32 to 224x224,
     and that would also change the number of labels, from 10 to 1000.
@@ -38,9 +34,15 @@
   0.0001 learning rate, cosine learning rate decay, 0.05 weight decay, 5 warmup epochs, 0.1 label smoothing.
 
 **(Wang et al., 2025)**
+- The ViT architecture remains under-optimized but improvements are not orthogonal.
+- Improvements:
+  - Although LayerNorm keeps the residual output range roughly constant, the outputs themselves get larger.
+    LayerScale uses a learned weight to scale down residual outputs so that they don't explode deeper into the network.
+    $x_{i + 1} = x_i + F(x) \odot \lambda$, where $\lambda \in \real^d$ initialized to something like $10^-4$,
+    and $F(x)$ is a MSA or MLP output.
 
 # Progress
-September 26, 2026:
+September 26, 2026:$
 - Read *An Image is Worth 16x16 words: Transformers for image recognition at scale*
 - Implemented a basic version of the original ViT: MSA, transformer layers
 - Loaded and visualized the CIFAR10 dataset, and converted images into patches
@@ -57,3 +59,7 @@ September 30, 2026:
 
 October 1, 2026:
 - First experiment ran successfully and I took some notes on how to improve my implementation. Mostly implementation errors.
+- Implemented the various improvement ideas: improve plotting, fix [class] embedding prepending bug, visualizing positional
+  embeddings, adding an actual classification head instead of just a projection, etc.
+- Measured top-1 accuracy, and switch to the STL10 dataset to test out larger image sizes.
+- Tweaks hyperparams to build a bigger model.

@@ -1,5 +1,6 @@
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 
 def log_training_progress(batch_idx, epoch, total_epochs, loss, bar_length, loader):
   num_batches = len(loader)
@@ -12,28 +13,31 @@ def log_training_progress(batch_idx, epoch, total_epochs, loss, bar_length, load
   print(f"{info} | [{progress_bar}] | Loss: {loss:.3f} \033[K", end=end, flush=True)
 
 def plot_loss_curve(data, output_path):
+  data = torch.tensor(data)
   vmin, vmax = data.min().item(), data.max().item()
   mean, std = data.mean().item(), data.std().item()
   fig, ax = plt.subplots()
   ax.set_title("Training loss curve")
-  ax.set_xlabel("Batches")
+  ax.set_xlabel("Epochs")
   ax.set_ylabel("Loss")
   ax.plot(data, "b-")
-  ax.text(0.5, -0.18, f"Min: {vmin} Max: {vmax} Mean: {mean} Std: {std}",
+  ax.text(0.5, -0.18, f"Min: {vmin:.2f} Max: {vmax:.2f} Mean: {mean:.2f} Std: {std:.2f}",
           transform=ax.transAxes, ha="center", va="top", fontsize=10)
   ax.set_yscale("log")
+  ax.yaxis.set_major_formatter(ScalarFormatter())
   fig.tight_layout()
   fig.savefig(output_path, bbox_inches="tight")
   plt.show()
 
-def visualize_patches(patches, patch_shape, fig_grid, label, fig_path):
+def viz_patches(patches, patch_shape, fig_grid,
+                      true_label, predicted_label, fig_path):
   N, Px, Py, C = patch_shape
   reshaped = patches.reshape(N, Px, Py, C)
 
   fig, axs = plt.subplots(nrows=fig_grid[0], ncols=fig_grid[1],
                             figsize=(4, 4), layout="constrained")
   axs = axs.flatten()
-  fig.suptitle(f"{label} image patches")
+  fig.suptitle(f"{true_label} image patches, predicted: {predicted_label}")
 
   for i in range(N):
     img = (reshaped[i] + 1) / 2
@@ -41,7 +45,7 @@ def visualize_patches(patches, patch_shape, fig_grid, label, fig_path):
     axs[i].axis("off")
   fig.savefig(fig_path)
 
-def visualize_attention_scores(layer_scores, fig_grid, fig_path):
+def viz_attn_scores(layer_scores, fig_grid, fig_path):
   fig, axs = plt.subplots(nrows=fig_grid[0], ncols=fig_grid[1],
                           figsize=(10, 10), layout="constrained")
   axs = axs.flatten()
@@ -60,8 +64,8 @@ def visualize_attention_scores(layer_scores, fig_grid, fig_path):
   cbar.ax.set_ylabel("Similarity", va="bottom", rotation=-90)
   fig.savefig(fig_path)
 
-def visualize_positional_embeddings(pos_embed, fig1_path, fig2_path):
-  fig1, ax1 = plt.subplots()
+def viz_pos_embeds(pos_embed, fig_path):
+  fig, ax1 = plt.subplots()
   ax1.set_title("Patch position similarity")
   ax1.set_xlabel("Patch index")
   ax1.set_ylabel("Patch index")
@@ -70,16 +74,22 @@ def visualize_positional_embeddings(pos_embed, fig1_path, fig2_path):
   similarity = torch.nn.functional.softmax(logits, dim=-1)
   heatmap = ax1.imshow(similarity, cmap="magma")
 
-  cbar = fig1.colorbar(heatmap, ax=ax1, location="right", shrink=0.7)
+  cbar = fig.colorbar(heatmap, ax=ax1, location="right", shrink=0.7)
   cbar.ax.set_ylabel("Similarity", va="bottom", rotation=-90)
-  fig1.savefig(fig1_path)
+  fig.savefig(fig_path)
 
-  fig2, ax2 = plt.subplots(figsize=(24, 8), dpi=120)
-  ax2.imshow(pos_embed, cmap="magma", aspect="auto")
-  ax2.set_title("Positional embeddings", fontsize=24)
-  ax2.set_yticks(torch.arange(0, pos_embed.shape[0] + 1, 1))
-  ax2.set_xlabel("Embedding dimension", fontsize=18)
-  ax2.set_ylabel("Path index", fontsize=18)
+def viz_model_features(prediction, patches, labels, scores, pos_embeds,
+                       h, score_fig_path, patch_fig_path, pos_fig_path):
+  G = h.img_size // h.patch_size
+  patch_shape = [G * G, h.patch_size, h.patch_size, 3]
 
-  fig2.tight_layout()
-  fig2.savefig(fig2_path)
+  i = torch.randint(h.batch_size, size=(1,)).item()
+  label = h.classes[labels[i]]
+  p = patches[i].cpu().detach().numpy()
+  s = scores[:, i].cpu().detach().numpy()
+  max_idx = prediction[i].argmax(dim=-1).item()
+  predicted_label = h.classes[max_idx]
+
+  viz_patches(p, patch_shape, [G, G], label, predicted_label, patch_fig_path)
+  viz_attn_scores(s, [h.layers, h.attn_heads], score_fig_path)
+  viz_pos_embeds(pos_embeds, pos_fig_path)
