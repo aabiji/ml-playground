@@ -1,6 +1,4 @@
 # Implementation
-- Use model checkpoints to train over several runs. Consider loading a pretrained ViT in order to focus on fine-tuning.
-
 - Inference demos:
   - Show general accuracy, show image, display top 5 model predictions, display the actual prediction, press space to choose another random image
   - Show general accuracy, show image, overlay predicted segmentation mask, overlay the actual segmentation mask, press space to change to another random image
@@ -19,6 +17,12 @@
     This is inspired by the way that different heads could be swapped out for different tasks in GPT-2.
     Will the lack of localized semantic understand hinger performance, or can localization be learned
     quickly if there's already a semantic understanding?
+
+    - Read to better understand how segmentation with ViTs are done:
+      - https://ai.stackexchange.com/questions/46002/vision-transformer-for-image-segmentation
+      - https://huggingface.co/learn/computer-vision-course/en/unit3/vision-transformers/vision-transformers-for-image-segmentation
+      - https://openaccess.thecvf.com/content/CVPR2025/papers/Kerssies_Your_ViT_is_Secretly_an_Image_Segmentation_Model_CVPR_2025_paper.pdf
+
     - Experiment with pixel based cross-entropy loss, DICE loss or Jaccard loss to see which is most effective
 
 - Implement the improvements proposed in ViT-5 and compare performance with the base ViT model
@@ -49,5 +53,7 @@ September 28, 2026:
 September 30, 2026:
 - Finished implementing the core trianing loop
 - Visualized image patches and attention scores
-- **How can we visualize the Q, K, V, O projections and the positional embeddings?**
-  given that they are very high dimensional
+- How can we visualize the Q, K, V, O projections and the positional embeddings? given that they are very high dimensional
+
+October 1, 2026:
+- First experiment ran successfully and I took some notes on how to improve my implementation. Mostly implementation errors.
