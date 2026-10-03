@@ -17,6 +17,9 @@ def plot_loss_curve(data, output_path):
   vmin, vmax = data.min().item(), data.max().item()
   mean, std = data.mean().item(), data.std().item()
   fig, ax = plt.subplots()
+  formatter = ScalarFormatter()
+  formatter.set_scientific(False)
+
   ax.set_title("Training loss curve")
   ax.set_xlabel("Epochs")
   ax.set_ylabel("Loss")
@@ -24,7 +27,7 @@ def plot_loss_curve(data, output_path):
   ax.text(0.5, -0.18, f"Min: {vmin:.2f} Max: {vmax:.2f} Mean: {mean:.2f} Std: {std:.2f}",
           transform=ax.transAxes, ha="center", va="top", fontsize=10)
   ax.set_yscale("log")
-  ax.yaxis.set_major_formatter(ScalarFormatter())
+  ax.yaxis.set_major_formatter(formatter)
   fig.tight_layout()
   fig.savefig(output_path, bbox_inches="tight")
   plt.show()
@@ -38,30 +41,13 @@ def viz_patches(patches, patch_shape, fig_grid,
                             figsize=(4, 4), layout="constrained")
   axs = axs.flatten()
   fig.suptitle(f"{true_label} image patches, predicted: {predicted_label}")
+  fig.supxlabel("Patch index")
+  fig.supylabel("Patch index")
 
   for i in range(N):
     img = (reshaped[i] + 1) / 2
     axs[i].imshow(img)
     axs[i].axis("off")
-  fig.savefig(fig_path)
-
-def viz_attn_scores(layer_scores, fig_grid, fig_path):
-  fig, axs = plt.subplots(nrows=fig_grid[0], ncols=fig_grid[1],
-                          figsize=(10, 10), layout="constrained")
-  axs = axs.flatten()
-
-  vmin, vmax = layer_scores.min().item(), layer_scores.max().item()
-  layers, heads, N = layer_scores.shape[0:3]
-  fig.suptitle(f"{N}x{N} attention scores: {layers} layers, {heads} heads", fontsize=20)
-
-  for l in range(layers):
-    for h in range(heads):
-      idx = l * heads + h
-      image = axs[idx].imshow(layer_scores[l, h], vmin=vmin, vmax=vmax, cmap="magma")
-      axs[idx].axis("off")
-
-  cbar = fig.colorbar(image, ax=axs, location="right", shrink=0.7)
-  cbar.ax.set_ylabel("Similarity", va="bottom", rotation=-90)
   fig.savefig(fig_path)
 
 def viz_pos_embeds(pos_embed, fig_path):
@@ -83,13 +69,15 @@ def viz_model_features(prediction, patches, labels, scores, pos_embeds,
   G = h.img_size // h.patch_size
   patch_shape = [G * G, h.patch_size, h.patch_size, 3]
 
-  i = torch.randint(h.batch_size, size=(1,)).item()
-  label = h.classes[labels[i]]
-  p = patches[i].cpu().detach().numpy()
-  s = scores[:, i].cpu().detach().numpy()
+  i = torch.randint(patches.shape[0], size=(1, )).item()
+  label_idx = labels[i].item()
   max_idx = prediction[i].argmax(dim=-1).item()
+
+  label = h.classes[label_idx]
   predicted_label = h.classes[max_idx]
 
+  p = patches[i].cpu().detach().numpy()
+  s = scores[:, i].cpu().detach().numpy()
+
   viz_patches(p, patch_shape, [G, G], label, predicted_label, patch_fig_path)
-  viz_attn_scores(s, [h.layers, h.attn_heads], score_fig_path)
   viz_pos_embeds(pos_embeds, pos_fig_path)

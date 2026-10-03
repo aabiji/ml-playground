@@ -63,3 +63,9 @@ October 1, 2026:
   embeddings, adding an actual classification head instead of just a projection, etc.
 - Measured top-1 accuracy, and switch to the STL10 dataset to test out larger image sizes.
 - Tweaks hyperparams to build a bigger model.
+
+October 2, 2026:
+- The visualized attention scores don't actually tell me much, so I'm axing that. The positional similarities are interesting though,
+  patches appear in the heatmap corresponding to semantically similar regions in the image.
+- Trained a larger model (6.2 M params -> 101 M params), accuracy is still very poor, only 30.20% top-1 accuracy on the STL10 dataset.
+  It's unclear whether the model fails to generalize because of suboptimal hyperparameters, model architecture or training dynamics...will need to read some more literature

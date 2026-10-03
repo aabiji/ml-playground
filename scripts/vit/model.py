@@ -11,17 +11,17 @@ import viz
 
 class Hyperparams:
   def __init__(self):
-    self.epochs = 15
-    self.batch_size = 64
+    self.epochs = 50
+    self.batch_size = 128
     self.learning_rate = 1e-3
     self.betas = [0.9, 0.999]
     self.label_smoothing = 0.1
     self.img_size = 96
-    self.embedding_dim = 256
+    self.embedding_dim = 512
     self.patch_size = 16
     self.attn_heads = 8
-    self.layers = 16
-    self.class_dim = 64
+    self.layers = 32
+    self.class_dim = 128
     self.classes = ["airplane", "bird", "car", "cat", "deer", "dog", "horse", "monkey", "ship", "truck"]
 
 def patchify_img(img_batch, B, C, P, G):
@@ -121,7 +121,7 @@ class ViT(nn.Module):
 torch.manual_seed(67)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-h, out_folder = Hyperparams(), "trial6"
+h, out_folder = Hyperparams(), "trial7"
 pathlib.Path(out_folder).mkdir(parents=True, exist_ok=True)
 
 augment_pipeline = v2.Compose([
@@ -129,9 +129,9 @@ augment_pipeline = v2.Compose([
   v2.ToDtype(torch.float32, scale=True),
   v2.Resize(size=(h.img_size, h.img_size)),
   v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)), # [0, 255] -> [-1, 1]
-  #v2.RandomHorizontalFlip(),
-  #v2.RandomRotation(90),
-  #v2.RandomErasing(p=0.3),
+  v2.RandomHorizontalFlip(),
+  v2.RandomRotation(90),
+  v2.RandomErasing(p=0.3),
 ])
 
 train_dataset = datasets.STL10(root=".cache/train/stl10", split="train",
@@ -192,11 +192,12 @@ with torch.enable_grad():
                               f"{out_folder}/pos_similarity_{epoch + 1}.png")
 
     losses.append(batch_losses.mean().item())
-    viz.plot_loss_curve(losses, f"{out_folder}/loss.png")
     scheduler.step()
 
-# Compute model accuracy
+viz.plot_loss_curve(losses, f"{out_folder}/loss.png")
 torch.save(model.state_dict(), f"{out_folder}/weights.pth")
+
+# Compute model accuracy
 model.eval()
 num_correct = 0
 
