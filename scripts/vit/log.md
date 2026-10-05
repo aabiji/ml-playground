@@ -1,48 +1,22 @@
-# Implementation
-- Inference demos:
-  - Show general accuracy, show image, display top 5 model predictions, display the actual prediction, press space to choose another random image
-  - Show general accuracy, show image, overlay predicted segmentation mask, overlay the actual segmentation mask, press space to change to another random image
+# Next steps
+- Replace the classification head with a segmentation head. Then, fine-tune on COCO minitrain.
+  This is inspired by the way that different heads could be swapped out for different tasks in GPT-2.
+  Will the lack of localized semantic understand hinger performance, or can localization be learned
+  quickly if there's already a semantic understanding?
 
-# Ideas
-- Pretrain a Vit on CIFAR10:
-  - Fine tune on ImageNet. That would increase the image resolution from 32x32 to 224x224,
-    and that would also change the number of labels, from 10 to 1000.
-    Will this attempt at transfer learning result in improved classification performance.
+  - Read to better understand how segmentation with ViTs are done:
+    - https://ai.stackexchange.com/questions/46002/vision-transformer-for-image-segmentation
+    - https://huggingface.co/learn/computer-vision-course/en/unit3/vision-transformers/vision-transformers-for-image-segmentation
+    - https://openaccess.thecvf.com/content/CVPR2025/papers/Kerssies_Your_ViT_is_Secretly_an_Image_Segmentation_Model_CVPR_2025_paper.pdf
 
-  - Replace the classification head with a segmentation head. Then, fine-tune on COCO minitrain.
-    This is inspired by the way that different heads could be swapped out for different tasks in GPT-2.
-    Will the lack of localized semantic understand hinger performance, or can localization be learned
-    quickly if there's already a semantic understanding?
+  - Experiment with pixel based cross-entropy loss, DICE loss or Jaccard loss to see which is most effective
 
-    - Read to better understand how segmentation with ViTs are done:
-      - https://ai.stackexchange.com/questions/46002/vision-transformer-for-image-segmentation
-      - https://huggingface.co/learn/computer-vision-course/en/unit3/vision-transformers/vision-transformers-for-image-segmentation
-      - https://openaccess.thecvf.com/content/CVPR2025/papers/Kerssies_Your_ViT_is_Secretly_an_Image_Segmentation_Model_CVPR_2025_paper.pdf
+- Read, understand and implement the VAE paper
 
-    - Experiment with pixel based cross-entropy loss, DICE loss or Jaccard loss to see which is most effective
-
-- Implement the improvements proposed in ViT-5 and compare performance with the base ViT model
-
-- Read the knowledge distillation paper and see if a large pretrained ViT model
-  (download the weights from somewhere else), can be distilled into a 100 M (at most) param model.
-
-# Notes
-**(Touvron et al., 2020)**
-- (Touvron et al., 2019) show that it's desirable to use a lower image resolution during training and a higher image
-  resolution during fine tuning. Positional embeddings are thus interpolated to accomodate the larger token sequence.
-- Interesting that they didn't find Dropout to be useful. They used 300 epochs, 1024 batch size, AdamW optimizer,
-  0.0001 learning rate, cosine learning rate decay, 0.05 weight decay, 5 warmup epochs, 0.1 label smoothing.
-
-**(Wang et al., 2025)**
-- The ViT architecture remains under-optimized but improvements are not orthogonal.
-- Improvements:
-  - Although LayerNorm keeps the residual output range roughly constant, the outputs themselves get larger.
-    LayerScale uses a learned weight to scale down residual outputs so that they don't explode deeper into the network.
-    $x_{i + 1} = x_i + F(x) \odot \lambda$, where $\lambda \in \real^d$ initialized to something like $10^-4$,
-    and $F(x)$ is a MSA or MLP output.
+- Join a Kaggle competition if I can't find a prof to work with by the end of the month.
 
 # Progress
-September 26, 2026:$
+September 26, 2026:
 - Read *An Image is Worth 16x16 words: Transformers for image recognition at scale*
 - Implemented a basic version of the original ViT: MSA, transformer layers
 - Loaded and visualized the CIFAR10 dataset, and converted images into patches
@@ -69,3 +43,14 @@ October 2, 2026:
   patches appear in the heatmap corresponding to semantically similar regions in the image.
 - Trained a larger model (6.2 M params -> 101 M params), accuracy is still very poor, only 30.20% top-1 accuracy on the STL10 dataset.
   It's unclear whether the model fails to generalize because of suboptimal hyperparameters, model architecture or training dynamics...will need to read some more literature
+
+October 4, 2026:
+- Did a first pass of (Wang et al., 2025) and (Shazeer, 2020). Still a lot more depth to uncover.
+- Came up with a few next steps:
+  - Visualize how attention scores changing throughout model training. How are the attention scores in the papers even computed?
+  - Compare and contrast test performance with LayerScale, 2D ROPE and RMSNorm added.
+  - Can we distill a large ViT-L model into a much tinier model? How small is too small?
+  - Train a different combinations of hyperparams to see if they are the issue.
+  - Attempt to overfit on a tiny dataset with a tiny model. How would I even know if I'm successful?
+  - What if patch tokens were 1x1? How does perf change?
+  - Should be plotting validation loss, not training loss.
