@@ -7,7 +7,7 @@ import torchvision.datasets as datasets
 from torchvision.transforms import v2
 import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
-import copy, humanize, math
+import humanize, math
 
 def log_training_progress(batch_idx, epoch, total_epochs, loss, bar_length, loader):
   num_bars = (batch_idx + 1) * bar_length / len(loader)
@@ -174,24 +174,15 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 hyperparams = {
   "epochs": 25,
+  "embedding_dim": 256,
   "warmup_epochs": 3,
   "batch_size": 64,
   "learning_rate": 1e-3,
   "betas": [0.9, 0.999],
-  "embedding_dim": 256,
   "patch_size": 7,
-  "num_heads": 8,
+  "num_heads": 4,
   "layers": 12,
   "num_classes": 10,
-}
-
-# NOTE: This is not grid search. Look into Optuna to understand how it does its hyperparameter sweeps
-sweep_tweaks = {
-  "epochs": [10, 25, 50, 100],
-  "embedding_dim": [256, 384, 512],
-  "num_heads": [4, 8, 16],
-  "layers": [12, 18, 24],
-  "patch_size": [4, 7]
 }
 
 p = v2.Compose([ v2.RGB(), v2.ToImage(), v2.ToDtype(torch.float32, scale=True) ])
@@ -204,47 +195,34 @@ train_loader = DataLoader(train_set, shuffle=True, batch_size=hyperparams["batch
 val_loader = DataLoader(val_set, shuffle=False, batch_size=hyperparams["batch_size"])
 test_loader = DataLoader(test_set, shuffle=False, batch_size=hyperparams["batch_size"])
 
-# Test different hyperparameters
-for key in sweep_tweaks:
-  hp = copy.deepcopy(hyperparams)
+harness = Harness(hp, img_size)
+ts = hyperparams["epochs"] * len(train_loader)
+ws = hyperparams["warmup_epochs"] * len(train_loader)
+scheduler = LambdaLR(harness.optimizer,
+                    lambda step: custom_lr_scheduler(step, ws, ts))
+print(f"Training a {humanize.metric(harness.num_params)} model using {device}")
+train_losses, val_losses = [], []
 
-  for v in sweep_tweaks[key]:
-    print(f"Sweep: {key} = {v}")
-    hp[key] = v
-    if key == "epochs":
-      hp["warmup_epochs"] = int(v * 0.1)
+# Training loop
+for epoch in range(hyperparams["epochs"]):
+  harness.model.train()
+  print("Training...")
+  with torch.enable_grad():
+    batch_losses, _ = harness.run_model(epoch, True, train_loader, scheduler=scheduler)
+    train_losses.append(sum(batch_losses) / len(batch_losses))
 
-    harness = Harness(hp, img_size)
-    ts = hp["epochs"] * len(train_loader)
-    ws = hp["warmup_epochs"] * len(train_loader)
-    scheduler = LambdaLR(harness.optimizer,
-                        lambda step: custom_lr_scheduler(step, ws, ts))
-    print(f"Training a {humanize.metric(harness.num_params)} model using {device}")
-    train_losses, val_losses = [], []
+  print("Validating...")
+  harness.model.eval()
+  with torch.no_grad():
+    batch_losses, _ = harness.run_model(epoch, False, val_loader)
+    val_losses.append(sum(batch_losses) / len(batch_losses))
 
-    # Training loop
-    for epoch in range(hp["epochs"]):
-      harness.model.train()
-      print("Training...")
-      with torch.enable_grad():
-        batch_losses, _ = harness.run_model(epoch, True, train_loader, scheduler=scheduler)
-        train_losses.append(sum(batch_losses) / len(batch_losses))
+plot_loss_curves(train_losses, val_losses, f"curves_{key}_{v}.png")
 
-      print("Validating...")
-      harness.model.eval()
-      with torch.no_grad():
-        batch_losses, _ = harness.run_model(epoch, False, val_loader)
-        val_losses.append(sum(batch_losses) / len(batch_losses))
-
-    plot_loss_curves(train_losses, val_losses, f"curves_{key}_{v}.png")
-
-    # Test model accuracy
-    print("Testing...")
-    harness.model.eval()
-    with torch.no_grad():
-      _, num_correct = harness.run_model(0, False, test_loader)
-      accuracy = 100.0 * num_correct / len(test_loader.dataset)
-      print(f"Top 1 test accuracy: {accuracy:.2f}%")
-
-    del harness
-    torch.cuda.empty_cache()
+# Test model accuracy
+print("Testing...")
+harness.model.eval()
+with torch.no_grad():
+  _, num_correct = harness.run_model(0, False, test_loader)
+  accuracy = 100.0 * num_correct / len(test_loader.dataset)
+  print(f"Top 1 test accuracy: {accuracy:.2f}%")
