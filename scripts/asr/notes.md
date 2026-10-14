@@ -1,10 +1,22 @@
 Monolingual ASR Exploration Project
 Target completion date: November 15, 2026
 
+**Done**
+Read [Measuring benchmark optimization in speech recognition](https://huggingface.co/blog/asr-benchmark-optimization).
+Some models on ASR benchmarks have been knowingly or unknowingly trained on benchmark datasets. This results in them
+outputting verbatim what the benchmark states is the correct answer for a samples, instead of what was actually spoken.
+Addtionally, a lower WER score doesn't necessarily mean better performance because WER doesn't account for semantic meaning.
+For example, a model output that uses the correct words but uses the wrong case will be scored incorrectly.
+
 **Vague TODO list**
 
 - Read [Speech representations: From Waveforms to MEL Spectrograms](https://mbrenndoerfer.com/writing/speech-representations-mel-spectrograms)
 - Visualize audio by plotting a MEL spectrogram of a 5s mono 44.1 kHz audio clip. Extend that to dual channels.
+
+- Skim some papers:
+  - [OpenWER: Improving Cross-Lingual ASR Evaluation and Enabling Token-Based Accuracy Metrics](https://arxiv.org/html/2606.21237v1)
+  - [On the Design of Qwen3.8-Next Architecture: Evaluation, Efficiency, and Training Stability](https://arxiv.org/pdf/2608.30320)
+  - [Kimi Audio](https://huggingface.co/moonshotai/Kimi-Audio-7B-Instruct)
 
 - Implement the techniques detailed in SpecAugment
   - Read [SpecAugment](https://arxiv.org/pdf/1904.08779)
