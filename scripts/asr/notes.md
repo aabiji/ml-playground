@@ -1,55 +1,44 @@
-Monolingual ASR Exploration Project
-Target completion date: November 15, 2026
+- A signal needs to be sampled at a rate $f_s \geq 2 f_{max}$ in order to avoid distortions.
 
-**Done**
-Read [Measuring benchmark optimization in speech recognition](https://huggingface.co/blog/asr-benchmark-optimization).
-Some models on ASR benchmarks have been knowingly or unknowingly trained on benchmark datasets. This results in them
-outputting verbatim what the benchmark states is the correct answer for a samples, instead of what was actually spoken.
-Addtionally, a lower WER score doesn't necessarily mean better performance because WER doesn't account for semantic meaning.
-For example, a model output that uses the correct words but uses the wrong case will be scored incorrectly.
+- Since most phonetic information lies below 8 Hz, a common sample rate for speech is 16 kHz.
 
-**Vague TODO list**
+- Larger STFT windows increase frequency resolution but lower temporal resolution. In other words, a larger STFT window allows for more fine grained frequency bins, but each frame will
+  cover a larger time frame, blurring rapid changes. The opposite is also true. Given this tradeoff, a common window size is 25 ms.
 
-- Read [Speech representations: From Waveforms to MEL Spectrograms](https://mbrenndoerfer.com/writing/speech-representations-mel-spectrograms)
-- Visualize audio by plotting a MEL spectrogram of a 5s mono 44.1 kHz audio clip. Extend that to dual channels.
+- The x-axis of a MEL spectrogram represents time while its y-axis displays MEL bands. Each band groups frequencies that scale linearly beneath 1000 Hz and logarithmically above, matching how the human ear perceives sound.
 
-- Skim some papers:
-  - [OpenWER: Improving Cross-Lingual ASR Evaluation and Enabling Token-Based Accuracy Metrics](https://arxiv.org/html/2606.21237v1)
-  - [On the Design of Qwen3.8-Next Architecture: Evaluation, Efficiency, and Training Stability](https://arxiv.org/pdf/2608.30320)
-  - [Kimi Audio](https://huggingface.co/moonshotai/Kimi-Audio-7B-Instruct)
+- SpecAugment:
+  - Time masking: mask out a random vertical strip from [x, x + k]
+  - Frequency masking: mask out a random horizontal strip from [y, x + l]
+  - `sparse_image_warp`: Compute a thin-plate spline that passes through a random point on the midline, the four corners of the spectrogram and the top and bottom middle points of the spectrogram. Use the thin-plate spline to bilinearly interpolate the spectrogram.
+    - To compute the thin-plate spline, a polyharmonic spline is used.
+      Suppose there are $M$ control points on a $N \times N$ plane. The goal is to fit a thin-plate spline: a surface that passes through all the control points and is as smooth as possible.
+      Each point is defined as the following.
 
-- Implement the techniques detailed in SpecAugment
-  - Read [SpecAugment](https://arxiv.org/pdf/1904.08779)
+      $$f(x, y) = \sum_{i = 1}^{M} w_i \phi(r) + p(x, y)$$
 
-- Implement a basic CLI real time transcription demo using a pretrained model: Parakeet-TDT-0.6B-v3
-  - Skim [Canary-1B-v2 & Parakeet-TDT-0.6B-v3](https://arxiv.org/html/2509.14128v2)
-  - Load audio from audio files, and mp3 or wav files.
-  - Stream audio in overlapping N second chunks and output the audio using several threads or
-    some sort of asynchronous processing
-  - Print interim and finalized transcript segments with timestamps
-  - Test with continuous speech, speech pauses, background noises and silence
+      Where $r = \sqrt{(x - c_{ix})^2 + (y - c_{iy})^2}$ is the distance between the point and the specific control point,
+      $w_i$ is a weight for the radial basis function $\phi$ that satisfies the following orthogonality constraints:
+      $\sum_{i = 1}^{N} w_i = \sum_{i = 1}^{N} w_i \boldsymbol{c_i} = 0$
+      and $p(x, y) = a + bx + cy$ is a polynomial function that specifies the background shape of the thin-plate spine.
+      To solve for $\boldsymbol{w}$ and $a, b c$, the equation above can be reworked into a system of linear equations.
 
-- Attempt to distill the parakeet model (or another similar model) into a smaller model
-  - Read [Distilling the knowledge in a neural network](https://arxiv.org/pdf/1503.02531)
-  - Inspect the teacher's architecture, tokenizer, output format, training framework and available training checkpoints
-  - Create a representative training subset of the audio samples and transcriptions
-  - Find a student architecture and a training recipe that I can train locally
-    - Experiment: What's the smallest distilled model that will maintain a +/- 10% accuracy difference?
-  - ... come up with the next set of tasks as I go ...
+      $$
+      \begin{bmatrix} K & P \\ P^T & 0 \end{bmatrix}
+      \begin{bmatrix} \boldsymbol{w} \\ \boldsymbol{c} \end{bmatrix}
+      = \begin{bmatrix} \boldsymbol{z} \\ 0 \end{bmatrix}
+      $$
 
-- Quantize the distilled model to further improve performance
-  - Read [Practical Quantization in Pytorch](https://pytorch.org/blog/quantization-in-practice/)
-  - Target CPU/iGPU inference and GPU inference separately
-  - Benchmark model size, performance and accuracy at various quantization modes
+      $K \in R^{M \times M}$ and each $K_{ij}$ is the radial basis function evaluated at the distance between the control points $i$ and $j$.
+      $P \in R^{M \times 3}$ and each $P_{i} = \begin{bmatrix} 1 & x & y \end{bmatrix}$ and $\boldsymbol{z} \in R^{M \times 1}$ is the value of each control point.
 
-- Reimplement the Whisper model and train it on a tiny dataset
-  - Read [wav2vec 2.0](https://arxiv.org/pdf/2006.11477)
-  - Read [Whisper](https://cdn.openai.com/papers/whisper.pdf)
-  - Learn how to use Optuna to run a hyperparamter sweep
-  - Train a tiny model on a tiny speech dataset
+      $\boldsymbol{w} \in R^{M \times 1}$ and $\boldsymbol{c} = \begin{bmatrix} a \\ b \\ c \end{bmatrix}$ are the weights and polynomial coefficients that are to be solved for.
 
-- *Final challenge*: Come up with a custom model architecture and benchmark against
-  existing SOTA models. What if we treated audio samples as images, split the mel
-  spectrograph in patches, project the patches and apply many of the improvements
-  made in recent ViT models one at a time (LayerScale, RMSNorm, ROPE, SwiGLU, etc)?
-  Is this even a good idea?  How much of a unique modality is audio?
+    - For every spectrogram in a batch, for every batch, for every epoch, a pipeline might look like the following.
+      1. Solve for w and c
+      2. Broadcast weights: M x 1 -> M x N x N
+      3. Compute polynomial for each position NxN
+      4. Compute phi -> M x N x N, multiply by broadcasted weights, sum across M -> N x N, add polynomial
+      5. Then use the resulting thin-plate spin to bilinearly interpolate each pixel on the souce image
+
+  - **The tiny regularization benefits derived from doing time warping is just not worth its comical inefficiency.**
