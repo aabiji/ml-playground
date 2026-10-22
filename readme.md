@@ -1,5 +1,9 @@
 Ideas:
 
+- Understand the ideas from:
+  https://cs231n.github.io/neural-networks-3/
+  https://developers.google.com/machine-learning/guides/deep-learning-tuning-playbook/scientific
+
 - Read and implement the DDPM paper
 
 - Pose estimation to 3D model movement
