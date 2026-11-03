@@ -1,0 +1,9 @@
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+indent-width = 2
+
+[tool.ruff.lint.isort]
+no-lines-before = ["standard-library", "third-party", "first-party", "local-folder"]
