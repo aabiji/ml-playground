@@ -43,26 +43,24 @@
 
 **CTC**
 
-A speech recognition model takes audio $X$, splits it into $T$ frames and at each frame outputs a probability distribution $p_t( \dot | X)$ over a vocabulary $V$ that includes a special token $\epsilon$. The goal is to produce a transcript $Y = \{ y_1, y_2, ... y_N }\$.
+A speech recognition model takes audio $X$, splits it into $T$ frames and at each frame outputs a probability distribution $p_t(\cdot | X)$ over a vocabulary $V$ that includes a special token $\epsilon$. The goal is to produce a transcript $Y = \{ y_1, y_2, ... y_N \}$.
 
-The problem is that we don't know which frames correspond to which tokens. Training with ordinary cross-entropy would require a label for each frame, which cannot be present. Phoneme duration varies with the speaker's speed, emotion and accent, so the model may emit the same token over several consecutive frames. Many frame-level token sequences, which are referred to as alignments, can therefore correspond to the same transcript when consecutively repeated tokens are merged and blanks are removed. For example, "hhheee_l_ll_o" and "hel_l_o" correspond to "hello".
+The problem is that we don't know which frames correspond to which tokens. Training with ordinary cross-entropy would require a label for each frame, which is normally not present. Phoneme duration varies with the speaker's speed, emotion and accent, so the model may emit the same token over several consecutive frames. Many frame-level token sequences, which are referred to as alignments, can therefore correspond to the same transcript when a function $B$ merges consecutively repeated tokens and removes blanks.
 
-CTC defines loss as the sum probability of outputting each token over time, for all possible alignments.
-$$ p(Y | X) = \sum_{A \in A_{X, Y}} \prod_{t = 1}^{T} p_t(a_t | x_t) $$
+CTC maximizes the probability of the transcript by summing the probability of each token over time, for all possible valid alignments. The loss is $-\log p(Y | X)$ and the product over $t$ is valid because CTC asummes frame outputs are conditionally independent from $X$.
 
-Where $A$ is an alignment, $X$ is the full audio sample and $x_t$ is the audio frame at $t \in [1, T]$, $Y$ is the audio transcript, and $N = |Y|$ is the number of tokens in the transcript. $A_{X, Y}$ is all possible token sequences of length $T$ that collapse to $Y$. Let us also define the blank token to be $b$.
+$$ p(Y | X) = \sum_{A \in A_{X, Y}} \prod_{t = 1}^{T} p_t(a_t | x_t) \qquad A_{X, Y} = \{ A \in V^T : B(A) = Y\} $$
 
-Notice that evaluating this loss function as it stands is extremely inefficient since there are $N^T$ possible alignments, most of which are invalid. That is, they do not result in the target sequence.
+Summing over all $V^T$ possible alignments, most of which are invalid, is infeasible. However, this problem can be reformulated as grid traversal problem. Let's define an $|Z| \times T$ grid, where $Z$ is the output sequence $Y$ padded with blank tokens.
 
-An alignment can be thought of as a path from the starting token at $t = 1$ to the final token at $t = T$. So, we can reformulate this problem into a grid traversal one.
+$$ Z \in \{ \epsilon, y_1, \epsilon, y_2, \epsilon, ... , \epsilon, y_N, \epsilon \}, \qquad M = 2 |Y| + 1$$
 
-Let us define $Z$ to be the target output sequence, with leading and trailing blank tokens, and blank tokens intersperced in between tokens.
-
-$$ Z \in \{ b, y_1, b, y_2, b, ... , b, y_N \} $$
-
-Considering the probability of possible token in $Z$ at every time step would result in a $2 N + 1 \times T$ grid that contains $\alpha(t, n)$. $\alpha(t, n)$ is defined to be the total probability of all paths that end at $(t, n)$. $\alpha(t, n) = 0, (t, n) \ne (1, 1) \union \(1, 2)$. $\alpha(1, 1) = p(1, 1)$ and $\alpha(1, 2) = p(1, 2)$, where $p(t, n)$ is the probability of $z_n$ at time $t$. This is because the only valid starting token is either $y_1$ or a blank character.
+Each cell in the grid would contain $\alpha$, the total probability of all paths that end on $(z_m, t_t)$. Every valid alignment would be a path through $Z$ that starts on $(z_m, t_1)$, ends on $(z_L, t_T)$, sits on one position each frame and never moves backward in time.
 
 <Insert a hand drawn diagram of the grid>
+---
+
+Considering the probability of possible token in $Z$ at every time step would result in a $2 N + 1 \times T$ grid that contains $\alpha(t, n)$. $\alpha(t, n)$ is defined to be the total probability of all paths that end at $(t, n)$. $\alpha(t, n) = 0, (t, n) \ne (1, 1) \union \(1, 2)$. $\alpha(1, 1) = p(1, 1)$ and $\alpha(1, 2) = p(1, 2)$, where $p(t, n)$ is the probability of $z_n$ at time $t$. This is because the only valid starting token is either $y_1$ or a blank character.
 
 Skipping non blank tokens would result in an incorrect output and the state at $t$ depends on the state at $t - 1$. So, only tokens from $([t - 1, t], [n - 2, n])$ can be allowed to move to another $(t, n)$. Additionally, all paths meeting at a cell have identical futures, so they can be summed (merged) at that cell.
 
