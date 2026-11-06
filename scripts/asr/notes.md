@@ -43,29 +43,14 @@
 
 **CTC**
 
-A speech recognition model takes audio $X$, splits it into $T$ frames and at each frame outputs a probability distribution $p_t(\cdot | X)$ over a vocabulary $V$ that includes a special token $\epsilon$. The goal is to produce a transcript $Y = \{ y_1, y_2, ... y_N \}$.
+- A speech recognition model takes audio $X$, splits it into $T$ frames and at each frame outputs a probability distribution $p_t(\cdot | X)$ over a vocabulary $V$ that includes a special blank token $\epsilon$. The goal is to produce a transcript $Y = \{ y_1, y_2, ... y_N \}$. The problem is that we don't know which frames correspond to which tokens. Training with ordinary cross-entropy would require a label for each frame, which is normally not present. Phoneme duration varies with the speaker's speed, emotion and accent, so the model may emit the same token over several consecutive frames. Many frame-level token sequences, which are referred to as alignments, can therefore correspond to the same transcript when a function $B$ merges consecutively repeated tokens and removes blanks.
 
-The problem is that we don't know which frames correspond to which tokens. Training with ordinary cross-entropy would require a label for each frame, which is normally not present. Phoneme duration varies with the speaker's speed, emotion and accent, so the model may emit the same token over several consecutive frames. Many frame-level token sequences, which are referred to as alignments, can therefore correspond to the same transcript when a function $B$ merges consecutively repeated tokens and removes blanks.
+- CTC maximizes the probability of the transcript by summing the probability of each token over time, for all possible valid alignments. The loss is $-\log p(Y | X)$ and the product over $t$ is valid because CTC asummes frame outputs are conditionally independent from $X$.
 
-CTC maximizes the probability of the transcript by summing the probability of each token over time, for all possible valid alignments. The loss is $-\log p(Y | X)$ and the product over $t$ is valid because CTC asummes frame outputs are conditionally independent from $X$.
+$$p(Y | X) = \sum_{A \in A_{X, Y}} \prod_{t = 1}^{T} p_t(a_t | x_t) \qquad A_{X, Y} = \{ A \in V^T : B(A) = Y\}$$
 
-$$ p(Y | X) = \sum_{A \in A_{X, Y}} \prod_{t = 1}^{T} p_t(a_t | x_t) \qquad A_{X, Y} = \{ A \in V^T : B(A) = Y\} $$
+- Evaluating all $V^T$ possible alignments, most of which are invalid, is infeasible. However, this problem can be reformulated as grid traversal problem. Let's define an $M \times T$ grid, where $Z$ is the output sequence $Y$ padded with blank tokens.
 
-Summing over all $V^T$ possible alignments, most of which are invalid, is infeasible. However, this problem can be reformulated as grid traversal problem. Let's define an $|Z| \times T$ grid, where $Z$ is the output sequence $Y$ padded with blank tokens.
+$$Z \in \{ \epsilon, y_1, \epsilon, y_2, \epsilon, ... , \epsilon, y_N, \epsilon \}, \qquad M = 2 |Y| + 1$$
 
-$$ Z \in \{ \epsilon, y_1, \epsilon, y_2, \epsilon, ... , \epsilon, y_N, \epsilon \}, \qquad M = 2 |Y| + 1$$
-
-Each cell in the grid would contain $\alpha$, the total probability of all paths that end on $(z_m, t_t)$. Every valid alignment would be a path through $Z$ that starts on $(z_m, t_1)$, ends on $(z_L, t_T)$, sits on one position each frame and never moves backward in time.
-
-<Insert a hand drawn diagram of the grid>
----
-
-Considering the probability of possible token in $Z$ at every time step would result in a $2 N + 1 \times T$ grid that contains $\alpha(t, n)$. $\alpha(t, n)$ is defined to be the total probability of all paths that end at $(t, n)$. $\alpha(t, n) = 0, (t, n) \ne (1, 1) \union \(1, 2)$. $\alpha(1, 1) = p(1, 1)$ and $\alpha(1, 2) = p(1, 2)$, where $p(t, n)$ is the probability of $z_n$ at time $t$. This is because the only valid starting token is either $y_1$ or a blank character.
-
-Skipping non blank tokens would result in an incorrect output and the state at $t$ depends on the state at $t - 1$. So, only tokens from $([t - 1, t], [n - 2, n])$ can be allowed to move to another $(t, n)$. Additionally, all paths meeting at a cell have identical futures, so they can be summed (merged) at that cell.
-
-The cell at (2, 1), could only have come from (1, 1), so $\alpha(2, 1) = \alpha(1, 1) * p(2, 1)$. The cell at (2, 2), could only have come from (1, 1) and (1, 2), so $\alpha(2, 2) = (\alpha(1, 1) + \alpha(1, 2)) * p(2, 2)$. The cell at (2, 3), could have only come from (1, 2), (1, 3), since coming from (1, 1) would skip a token. So $\alpha(2, 3) = (\alpha(1, 2) + \alpha(1, 3)) * p(2, 3)$. These three examples show the tree possible conditions for filling out the rest of the grid.
-
-So, the original loss function can be redefined. Any alignment that does or does not end in a blank will still result in the same sequence, so both cases need to be considered.
-
-$$p(Y | X) = \alpha(2N + 1, T) + \alpha(2N, T)$$
+Each cell in the grid contains $\alpha$, the total probability of all paths that start on $(t, z_1)$, end on $(t, z_m)$, sit on one position each frame and always step forward with time. All cells will be initialized to zero. The goal is to compute the total probability of all paths that produce a valid alignment.
