@@ -1,6 +1,14 @@
-# Ideas
+Ideas:
+- Train a gpt on shakespear or tiny stories and actually get inference perf
+- Recreate grokking modular addition
+- Implement tiny ASR model
+- Understand and implement DDPM
 
-- Write notes on CTC -- may or may not be good enough for an article, what do other sites say?
+TinyStories: their dataset has a token space that reflects a smaller, more focused domain, making it easier for the model to do next-token prediction.
+
+ASR Project:
+Questions:
+- How should I be normalizing spectrograms?
 
 - First phase: implementation
     - Skim the conformer, fast conformer, zipconformer, wav2vec, parakeet, whisper model papers to get some architecture ideas

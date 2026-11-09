@@ -1,4 +1,3 @@
-scripts/*/__pycache__
-.venv
-papers
+**/*/__pycache__
 **/*.cache
+**/.venv
