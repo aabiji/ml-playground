@@ -3,6 +3,11 @@ Ideas:
 - Recreate grokking modular addition
 - Implement tiny ASR model
 - Understand and implement DDPM
+- Curious about optimizers: has a similar concept to ScaledAdam been applied to other problems?
+  - [AdamW](https://arxiv.org/pdf/1711.05101)
+  - [u-µP](https://arxiv.org/pdf/2407.17465v3)
+- Should learn about [YaRN](https://arxiv.org/pdf/2309.00071)
+- Forms of intelligence that isn't just dataset fitting?
 
 TinyStories: their dataset has a token space that reflects a smaller, more focused domain, making it easier for the model to do next-token prediction.
 
