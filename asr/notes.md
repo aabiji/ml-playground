@@ -54,3 +54,11 @@ $$p(Y | X) = \sum_{A \in A_{X, Y}} \prod_{t = 1}^{T} p_t(a_t | x_t) \qquad A_{X,
 $$Z \in \{ \epsilon, y_1, \epsilon, y_2, \epsilon, ... , \epsilon, y_N, \epsilon \}, \qquad M = 2 |Y| + 1$$
 
 Each cell in the grid contains $\alpha$, the total probability of all paths that start on $(t, z_1)$, end on $(t, z_m)$, sit on one position each frame and always step forward with time. All cells will be initialized to zero. The goal is to compute the total probability of all paths that produce a valid alignment.
+
+**Icefall Zipformer implementation**
+- Using [torch.jit](https://residentmario.github.io/pytorch-training-performance-guide/jit.html) to speed up training, presumably after they've ironed out all the bugs.
+- Using feature masks to mask out random embedding values between dimension 256 and dimension 384 during training. Is this just a form of location specific dropout?
+  TODO: read [this](https://www.emergentmind.com/topics/masked-input-regularization-mir)
+- There's a clear difference between regular forward and streaming forward. What is it?
+- Skimming through icefall's code, there is a clear difference between what they do and what the paper describes (ex: stride for the first convolution in ConvEmbed).
+  The best way to understand a paper is to read it and the authors code!

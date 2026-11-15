@@ -34,19 +34,24 @@ class LibriSpeech(Dataset):
         self.transcript_cache[key] = lines
 
   def process_all_samples(self, all_samples):
-    hop_length = 160 # 10 ms
+    # Convert a batch of audio samples into a batch of padded spectrograms with a
+    # framerate of 100 kHz. For example, with 1000 ms of audio, a 16 kHz sampling
+    # rate and a hop length of 160 samples, that's (1000 * 16000) / 160 + 1 = 101
+    # time frames. Adding 1 since each frame is centered on its timestamp rather
+    # than starting on it.
+    hop_length = 160
     samples_lengths = list(map(lambda x: x.shape[-1], all_samples))
-    frame_lengths = torch.tensor(samples_lengths) // hop_length
 
+    frame_lengths = (torch.tensor(samples_lengths) // hop_length) + 1
+
+    # Padding samples before applying the spectrogram for efficiency
     padded = pad_sequence(all_samples, batch_first=True, padding_value=0)
     padded_np = padded.detach().cpu().numpy()
 
-    spectrograms = librosa.feature.melspectrogram(y=padded_np, sr=16000, hop_length=160,
+    spectrograms = librosa.feature.melspectrogram(y=padded_np, sr=16000, hop_length=hop_length,
                                                   n_mels=80, n_fft=400, win_length=400)
     spectrograms = librosa.power_to_db(spectrograms, amin=1e-5, ref=np.max)
     spectrograms = torch.from_numpy(spectrograms).float()
-
-    print(spectrograms.shape)
     return spectrograms, frame_lengths
 
   def __len__(self):
