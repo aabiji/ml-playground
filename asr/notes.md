@@ -57,8 +57,8 @@ Each cell in the grid contains $\alpha$, the total probability of all paths that
 
 **Icefall Zipformer implementation**
 - Using [torch.jit](https://residentmario.github.io/pytorch-training-performance-guide/jit.html) to speed up training, presumably after they've ironed out all the bugs.
+- There's a clear difference between regular forward and streaming forward. What is it?
+- Skimming through icefall's code, there is a clear difference between what they do and what the paper describes (ex: stride for the first convolution in ConvEmbed). The best way to understand a paper is to read it and the authors code!
+- Each encoder layer has a different embedding dimension, so each layer either truncates the input or pads it to reach its own internal embedding size. I'm quite shocked that you can get away with that....
 - Using feature masks to mask out random embedding values between dimension 256 and dimension 384 during training. Is this just a form of location specific dropout?
   TODO: read [this](https://www.emergentmind.com/topics/masked-input-regularization-mir)
-- There's a clear difference between regular forward and streaming forward. What is it?
-- Skimming through icefall's code, there is a clear difference between what they do and what the paper describes (ex: stride for the first convolution in ConvEmbed).
-  The best way to understand a paper is to read it and the authors code!

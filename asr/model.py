@@ -9,14 +9,25 @@ def swooshr(x):
 def swooshl(x):
   return torch.log(1 + torch.exp(x - 4)) - 0.08 * x - 0.035
 
+# Truncate or pad the tensor to match the target final dimension
+def convert_embedding_dim(x, target_dim):
+  B, T, input_embed = x.shape
+
+  if input_embed > target_dim:
+    return x[:, :, :target_dim]
+
+  pad = torch.zeros(B, T, target_dim - input_embed,
+                    device=x.device, dtype=x.dtype)
+  return torch.cat((x, pad), dim=-1)
+
 class Bypass(nn.Module):
   def __init__(self, embed_dim):
     super().__init__()
     #Starting range of [0.9 to 1.0] TODO: change to a low of 0.2 after 20k steps
     self.c = nn.Parameter(0.9 + 0.1 * torch.rand(embed_dim))
 
-  def forward(self, block_in, residual):
-    return (1 - self.c)[None, None, :] * block_in + self.c[None, None, :] * residual
+  def forward(self, mod_in, mod_out):
+    return (1 - self.c)[None, None, :] * mod_in + self.c[None, None, :] * mod_out
 
 class BiasNorm(nn.Module):
   def __init__(self, embed_dim):
@@ -29,6 +40,29 @@ class BiasNorm(nn.Module):
     s = torch.square(x - self.bias[None, None, :])
     rms = (1 / s.shape[-1]) * torch.sum(s, dim=-1) # Channel-wise RMS
     return x / rms[:, :, None] * torch.exp(self.gamma)
+
+class Sampler(nn.Module):
+  def __init__(self, factor):
+    super().__init__()
+    self.weights = nn.Parameter(torch.zeros(factor))
+    self.f = factor
+
+  def forward(self, x, downsample):
+    B, T, E = x.shape
+
+    # Upsample: [B, T, E] -> [B, T * factor, E]
+    if not downsample:
+      return torch.repeat_interleave(x, repeats=self.f, dim=1)
+
+    # Downsample: [B, T, E] -> [B, T // factor, E]
+    if T % self.f != 0:
+      next_multiple = T // self.f + self.f
+      pad = torch.zeros(B, next_multiple - T, E, device=x.device, dtype=x.dtype)
+      x = torch.cat((x, pad), dim=1)
+
+    grouped = x.reshape(B, T // self.f, self.f, E)
+    weighted = (grouped * self.weights[None, :, None, None])
+    return weighted.sum(dim=1)
 
 class ConvEmbed(nn.Module):
   def __init__(self, n_mels, embed_dim):
@@ -47,7 +81,8 @@ class ConvEmbed(nn.Module):
 
     # Linear projection
     # [B, 128, (T / 2) - 3, (F / 8) - 1] -> [B, (T / 2) - 3, E]
-    self.proj = nn.Linear(128 * ((n_mels / 8) - 1), embed_dim)
+    new_freq_dim = ((n_mels / 8) - 1)
+    self.proj = nn.Linear(128 * new_freq_dim, embed_dim)
     self.norm = BiasNorm(embed_dim)
 
   def forward(self, spectrograms):
@@ -71,14 +106,14 @@ class ConvEmbed(nn.Module):
     return self.norm(self.proj(r))
 
 class NonLinearAttention(nn.Module):
-  def __init__(self, in_dim):
+  def __init__(self, embed_dim):
     super().__init__()
     # "...it first projects the input with 3 linear layers A, B, and C,
     # each being of 3/4 input dimension" (p. 4)
-    self.a_proj = nn.Linear(in_dim, in_dim * 0.75, bias=False)
-    self.b_proj = nn.Linear(in_dim, in_dim * 0.75, bias=False)
-    self.c_proj = nn.Linear(in_dim, in_dim * 0.75, bias=False)
-    self.linear = nn.Linear(in_dim * 0.75, in_dim)
+    self.a_proj = nn.Linear(embed_dim, embed_dim * 0.75, bias=False)
+    self.b_proj = nn.Linear(embed_dim, embed_dim * 0.75, bias=False)
+    self.c_proj = nn.Linear(embed_dim, embed_dim * 0.75, bias=False)
+    self.linear = nn.Linear(embed_dim * 0.75, embed_dim)
 
   def forward(self, x, attn_weights):
     # Non-linear attention is single headed
@@ -86,19 +121,16 @@ class NonLinearAttention(nn.Module):
     head_weights = attn_weights[:, 0, :, :] # Take the first head
     return self.linear(head_weights @ (torch.tanh(b) * c))
 
-# layer_ff_dims = [512, 768, 768, 768, 768, 768]
-# embed_dims = [192, 256, 256, 256, 256, 256]
-# n_layers = [2, 2, 2, 2, 2, 2]
-# attn_heads = [4, 4, 4, 8, 4, 4]
-# conv_kernel_sizes = [31, 31, 15, 15, 15, 31]
-# q_dim, v_dim = 32, 12 in attention heads
 class EncoderBlock(nn.Module):
   def __init__(self, embed_dim, ff_dim, conv_kernel, n_heads):
     super().__init__()
-    self.H, self.d_k, self.d_v = n_heads, 32, 12
+    self.d_k, self.d_v = 32, 12
+    self.H, self.E = n_heads, embed_dim
     self.Q_proj = nn.Linear(embed_dim, self.H * self.d_k)
     self.K_proj = nn.Linear(embed_dim, self.H * self.d_k)
 
+    # "...For the three feed-forward modules in each Zipformer block, the hidden dimensions
+    # in the first one and the last one are 3/4 and 5/4 of that in the middle one."
     self.ff1 = nn.Sequential(
       nn.Linear(embed_dim, ff_dim * 0.75),
       nn.Linear(ff_dim * 0.75, embed_dim)
@@ -117,7 +149,7 @@ class EncoderBlock(nn.Module):
       nn.Linear(ff_dim, embed_dim)
     )
 
-    self.bypass1 = Bypass(embed_dim)
+    self.mid_bypass = Bypass(embed_dim)
 
     self.V_proj2 = nn.Linear(embed_dim, self.H * self.d_v)
     self.O_proj2 = nn.Linear(self.H * self.d_v, embed_dim)
@@ -132,16 +164,16 @@ class EncoderBlock(nn.Module):
 
     self.norm = BiasNorm(embed_dim)
 
-    self.bypass2 = Bypass(embed_dim)
+    self.bypass = Bypass(embed_dim)
 
-  # input shape and output shape is [B, T, E]
+  # input shape and output shape is [Batches, Time frames, Embedding dimension]
   def forward(self, x):
-    B, T, E = x.shape
+    x = convert_embedding_dim(x, self.E)
+    B, T, _ = x.shape
     r = x.clone() # Residual stream
 
-    # Compute the shared attention weights. Zipformer multihead attention into
-    # multihead attention weights and self attention in order to do three
-    # attention operations for the price of 1.
+    # Zipformer splits multihead attention into computing shared weights and
+    # computing scaled values in order to amortize the cost of attention.
     queries = self.Q_proj(r).view(B, T, self.H, self.d_k).permute(1, 2)
     keys = self.K_proj(r).view(B, T, self.H, self.d_k).permute(1, 2)
     scale = torch.sqrt(torch.tensor(self.d_k))
@@ -158,7 +190,7 @@ class EncoderBlock(nn.Module):
 
     r = r + self.conv1(r)
     r = r + self.ff2(r)
-    r = r + self.bypass1(x.clone(), r)
+    r = r + self.mid_bypass(x.clone(), r)
 
     # Second Self-Attention
     v2 = self.V_proj2(r).view(B, T, self.H, self.d_v).permute(1, 2)
@@ -168,4 +200,43 @@ class EncoderBlock(nn.Module):
     r = r + self.conv2(r)
     r = r + self.ff3(r)
     r = self.norm(r)
-    return r + self.bypass2(r)
+    return r + self.bypass(r)
+
+class Zipformer(nn.Module):
+  def __init__(self, n_mels, conv_kernel_sizes, layer_heads, ff_dims,
+               embed_dims, layer_counts, sampling_factors):
+    super().__init__()
+    self.n_layers = len(layer_counts)
+
+    self.conv_embed = ConvEmbed(n_mels, embed_dims[0])
+
+    self.stacks = nn.ModuleList([
+      nn.ModuleList([
+        EncoderBlock(embed_dims[i], ff_dims[i],
+                     conv_kernel_sizes[i], layer_heads[i])
+        for _ in layer_counts[i]
+      ])
+      for i in range(self.n_layers)
+    ])
+
+    self.samplers = nn.ModuleList([
+      Sampler(sampling_factors[i]) for i in range(self.n_layers - 1)
+    ])
+
+    self.bypasses = nn.ModuleList([
+      Bypass(embed_dims[i]) for i in range(1, self.n_layers)
+    ])
+
+    self.final_sampler = Sampler(sampling_factors[-1])
+
+  def forward(self, x):
+    x = self.conv_embed(x)
+    x = self.stacks[0](x)
+
+    for i in range(self.n_layers - 1):
+      x1 = self.samplers[i](x, True)
+      x1 = self.stacks[i + 1](x1)
+      x1 = self.samplers[i](x1, False)
+      x  = self.bypasses[i](x, x1)
+
+    return self.final_sampler(x, True)
