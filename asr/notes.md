@@ -1,3 +1,29 @@
+
+General Ideas:
+- Train a gpt on shakespear or tiny stories and actually get inference perf
+  - Study how nanochat is implemented
+- Recreate grokking modular addition
+- Understand and implement DDPM
+- Curious about optimizers: has a similar concept to ScaledAdam been applied to other problems?
+  - [AdamW](https://arxiv.org/pdf/1711.05101)
+  - [u-µP](https://arxiv.org/pdf/2407.17465v3)
+- Should learn about [YaRN](https://arxiv.org/pdf/2309.00071)
+- What's CUDA?
+- **Implement tiny ASR model**
+  - Build a voice dictation daemon for my laptop and preferably it would skip words like “period” and “comma", with actual periods and commas (given the appropriate context). And be small enough overhead that I can continually run this or launch the demon repeatedly with a keyboard shortcut.
+
+Questions:
+- How should I be normalizing spectrograms?
+- What's transducers? I'm assuming it's better than CTC?
+- What's beam search?
+- Would it be better to train from scratch or distill an existing model?
+- How do the models handle varying noise levels? How can that be improved?
+- Are these models sample efficient? How can they be made more sample efficient?
+- Can these models also determine who is speaking (speaker diarization)?
+- Can we get fast and coherent ctc without an external language model?
+- How about text to speech? SSL for ASR models?
+
+## Concepts
 **Mel spectrograms**
 
 - A signal needs to be sampled at a rate $f_s \geq 2 f_{max}$ in order to avoid distortions.
