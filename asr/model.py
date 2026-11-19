@@ -1,13 +1,22 @@
 # Model implementation based on Zipformer (Yao et al., 2024) and icefall's Zipformer implementation.
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-# Activation functions
-def swooshr(x):
-  return torch.log(1 + torch.exp(x - 1)) - 0.08 * x - 0.313261687
+# Activation functions: using softplus to nicely handle larger values of x
+class SwooshR(nn.Module):
+  def __init__(self):
+    super().__init__()
 
-def swooshl(x):
-  return torch.log(1 + torch.exp(x - 4)) - 0.08 * x - 0.035
+  def forward(self, x):
+    return F.softplus(x - 1) - 0.08 * x - 0.313261687
+
+class SwooshL(nn.Module):
+  def __init__(self):
+    super().__init__()
+
+  def forward(self, x):
+    return F.softplus(x - 4) - 0.08 * x - 0.035
 
 # Truncate or pad the tensor to match the target final dimension
 def convert_embedding_dim(x, target_dim):
@@ -23,22 +32,22 @@ def convert_embedding_dim(x, target_dim):
 class Bypass(nn.Module):
   def __init__(self, embed_dim):
     super().__init__()
-    #Starting range of [0.9 to 1.0] TODO: change to a low of 0.2 after 20k steps
     self.c = nn.Parameter(0.9 + 0.1 * torch.rand(embed_dim))
 
   def forward(self, mod_in, mod_out):
+    # TODO: enforce the [0.9 to 1.0] range here and change to a low of 0.2 after 20k steps
     return (1 - self.c)[None, None, :] * mod_in + self.c[None, None, :] * mod_out
 
 class BiasNorm(nn.Module):
   def __init__(self, embed_dim):
     super().__init__()
     self.bias = nn.Parameter(torch.rand(embed_dim))
-    self.gamma = torch.rand(1)
+    self.gamma = nn.Parameter(torch.tensor(0))
 
   def forward(self, x):
     # x.shape = [Batch, Time, Embedding Dim]
-    s = torch.square(x - self.bias[None, None, :])
-    rms = (1 / s.shape[-1]) * torch.sum(s, dim=-1) # Channel-wise RMS
+    term = x - self.bias[None, None, :]
+    rms = torch.sqrt(torch.mean(term ** 2, dim=-1)) # Channel-wise
     return x / rms[:, :, None] * torch.exp(self.gamma)
 
 class Sampler(nn.Module):
@@ -67,34 +76,36 @@ class Sampler(nn.Module):
 class ConvEmbed(nn.Module):
   def __init__(self, n_mels, embed_dim):
     super().__init__()
-    # [B, C, T, F] -> [B, 128, (T / 2) - 3, (F / 8) - 1]
+    # [B, C, T, F] -> [B, 128, (T / 2) - 3, (F / 4) - 1]
     # We can afford to drop frames and frequencies since
     # they're negligible and probably redundant anyways
-    self.downsample1 = nn.Conv2d(1, 8, 3, stride=1, padding=(0, 1), bias=False)
-    self.downsample2 = nn.Conv2d(8, 32, 3, stride=2, bias=False)
-    self.downsample3 = nn.Conv2d(32, 128, 3, stride=(1, 2), bias=False)
+    self.downsample = nn.Sequential(
+      nn.Conv2d(1, 8, 3, stride=1, padding=(0, 1), bias=False),
+      SwooshR(),
+      nn.Conv2d(8, 32, 3, stride=2, bias=False),
+      SwooshR(),
+      nn.Conv2d(32, 128, 3, stride=(1, 2), bias=False),
+      SwooshR(),
+    )
 
-    # ConvNeXT block
-    self.depth_wise1 = nn.Conv2d(128, 128, 7, padding=3, groups=128, bias=False)
-    self.point_wise1 = nn.Conv2d(128, 384, 1, bias=False)
-    self.point_wise2 = nn.Conv2d(384, 128, 1, bias=False)
+    # ConvNeXT block: 1 depth-wise conv followed by 2 point-wise convs
+    self.conv_next_block = nn.Sequential(
+      nn.Conv2d(128, 128, 7, padding=3, groups=128, bias=False),
+      nn.Conv2d(128, 384, 1, bias=False),
+      SwooshL(),
+      nn.Conv2d(384, 128, 1, bias=False),
+    )
 
     # Linear projection
-    # [B, 128, (T / 2) - 3, (F / 8) - 1] -> [B, (T / 2) - 3, E]
-    new_freq_dim = ((n_mels / 8) - 1)
+    # [B, 128, (T / 2) - 3, (F / 4) - 1] -> [B, (T / 2) - 3, E]
+    new_freq_dim = (((n_mels - 1) // 2) - 1) // 2
     self.proj = nn.Linear(128 * new_freq_dim, embed_dim)
     self.norm = BiasNorm(embed_dim)
 
   def forward(self, spectrograms):
     x = spectrograms.unsqueeze(1) # x.shape = [B, C, T, F]
-    x = swooshr(self.downsample1(x))
-    x = swooshr(self.downsample2(x))
-    x = swooshr(self.downsample3(x))
-
-    y = self.depth_wise1(x)
-    y = self.point_wise1(y)
-    y = swooshl(y)
-    y = self.point_wise2(y)
+    x = self.downsample(x)
+    y = self.conv_next_block(x)
 
     # [B, C, T, F] -> [B, C, F, T] -> [B, C * F, T] -> [B, T, C * F]
     r = x.clone() + y
@@ -119,8 +130,10 @@ class NonLinearAttention(nn.Module):
     # Non-linear attention is single headed
     a, b, c = self.a_proj(x), self.b_proj(x), self.c_proj(x)
     head_weights = attn_weights[:, 0, :, :] # Take the first head
-    return self.linear(head_weights @ (torch.tanh(b) * c))
+    attention = head_weights @ (torch.tanh(b) * c)
+    return self.linear(a * attention)
 
+# TODO: where's the relative positional encoding???
 class EncoderBlock(nn.Module):
   def __init__(self, embed_dim, ff_dim, conv_kernel, n_heads):
     super().__init__()
@@ -158,8 +171,8 @@ class EncoderBlock(nn.Module):
                            padding=(conv_kernel - 1) // 2, bias=False)
 
     self.ff3 = nn.Sequential(
-      nn.Linear(embed_dim, ff_dim * 1.75),
-      nn.Linear(ff_dim * 1.75, embed_dim)
+      nn.Linear(embed_dim, ff_dim * 1.25),
+      nn.Linear(ff_dim * 1.25, embed_dim)
     )
 
     self.norm = BiasNorm(embed_dim)
@@ -190,7 +203,7 @@ class EncoderBlock(nn.Module):
 
     r = r + self.conv1(r)
     r = r + self.ff2(r)
-    r = r + self.mid_bypass(x.clone(), r)
+    r = self.mid_bypass(x.clone(), r)
 
     # Second Self-Attention
     v2 = self.V_proj2(r).view(B, T, self.H, self.d_v).permute(1, 2)
@@ -200,7 +213,7 @@ class EncoderBlock(nn.Module):
     r = r + self.conv2(r)
     r = r + self.ff3(r)
     r = self.norm(r)
-    return r + self.bypass(r)
+    return self.bypass(x.clone(), r)
 
 class Zipformer(nn.Module):
   def __init__(self, n_mels, conv_kernel_sizes, layer_heads, ff_dims,

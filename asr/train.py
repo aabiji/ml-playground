@@ -17,3 +17,5 @@ import torch
 #conv_kernel_sizes = [31, 31, 15, 15, 15, 31]
 #sampling_factors = [2, 4, 8, 4, 2, 2]
 #Zipformer(80, conv_kernel_sizes, attn_heads, layer_ff_dims, embed_dims, layer_counts, sampling_factors)
+
+# TODO: get a training loop going with some nice plots!

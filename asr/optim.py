@@ -1,6 +1,8 @@
 import torch
 from torch.optim import Optimizer
 
+# TODO: Eden optimizer
+
 class ScaledAdam(Optimizer):
   """
   Although Adam normalizes the first and second order moments, it doesn't account
@@ -13,15 +15,17 @@ class ScaledAdam(Optimizer):
   eta            : Scaling factor on the learning rate for parameter scale.
   eps            : Epsilon value to avoid dvision by zero.
   """
-  def __init__(self, params, lr=0.025, beta1=0.9, beta2=0.98, eta=0.1, eps=1e-8):
-    assert lr > 0, ValueError(f"Invalid learning rate lr={lr}")
-    assert eps > 0, ValueError(f"eps must be greater than 0")
+  def __init__(self, params, lr=0.025, beta1=0.9,
+               beta2=0.98, eta=0.1, eps=1e-8, min_rms=1e-9):
+    if lr <= 0: raise ValueError(f"Invalid learning rate lr={lr}")
+    if eps <= 0: raise ValueError(f"eps must be greater than 0")
 
-    defaults = dict(lr=lr, step=0, beta1=beta1, beta2=beta2, eta=eta, eps=eps)
+    defaults = dict(lr=lr, step=0, beta1=beta1, beta2=beta2,
+                    eta=eta, eps=eps, min_rms=min_rms)
     super(ScaledAdam, self).__init__(params, defaults)
 
   @torch.no_grad()
-  def step(self, closure=None):
+  def step(self, closure=None): # type: ignore
     loss = None
     if closure is not None:
       with torch.enable_grad():
@@ -29,40 +33,46 @@ class ScaledAdam(Optimizer):
 
     for group in self.param_groups:
       lr, b1, b2 = group["lr"], group["beta1"], group["beta2"]
-      eta, eps = group["eta"], group["eps"]
+      eta, eps, min_rms = group["eta"], group["eps"], group["min_rms"]
 
       for p in group["params"]:
         g = p.grad
         if g is None:
           continue
 
-        # Init tracking state for the parameter
         state = self.state[p]
         if len(state) == 0:
-          state["param_scale"] = 0
-          state["moment1"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-          state["moment2"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-          state["scale_moment1"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-          state["scale_moment2"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+          state["t"] = 0 # Time step
+          # First and second-order scale moments (scalar)
+          state["n"] = 0
+          state["w"] = 0
+          # First and second-order gradient moments
+          state["m"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+          state["v"] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
         state["step"] += 1
-        state["param_scale"] = root_mean_square(p)
-        r = group["param_scale"]
         t = state["step"]
 
-        m, v = group["moment1"], group["moment2"]
+        # The bias-correction term amplifies the moment when t is small, and that amplification diminishes as t increases
+        c = torch.sqrt(torch.tensor(1 - b2 ** t) / (1 - b1 ** t)).item()
+
+        # The root mean square of p (parameter scale) should never be zero,
+        # since that would make grad_delta zero forever and break stepping.
+        r = p.square().mean().sqrt().clamp(min=min_rms)
+
+        # Calculate the first and second order gradient moments
+        m, v, n, w = state["m"], state["v"], state["n"], state["w"]
         m.mul_(b1).add_(g, alpha=1 - b1)
-        v.mul_(b2).add_(g ** 2, alpha=1 - b2)
+        v.mul_(b2).addcmul_(g, g, alpha=1 - b2)
 
-        n, w = group["scaled_moment1"], group["scaled_moment2"]
-        h = g * p # Parameter scale gradient
+        # Calculate the first and second order scale moments
+        h = (g * p).sum() # Scalar gradient with respect to the parameter's scale
         n.mul_(b1).add_(h, alpha=1 - b1)
-        w.mul_(b2).add_(h ** 2, alpha=1 - b2)
+        w.mul_(b2).addcmul_(h, h, alpha=1 - b2)
 
-        c = torch.sqrt((1 - b2) ** t) / ((1 - b1) ** t) # Bias-correction term
-        grad_delta = -lr * r * c * m / (torch.sqrt(v) + eps)
-        scale_delta = (-eta * lr * c * n / (torch.sqrt(w) + eps)) * p
-
-        p.add_(grad_delta).add_(scale_delta)
+        # Step the parameter
+        grad_delta = -lr * r * c * m / (v.sqrt() + eps)
+        scale_delta = -eta * lr * c * n / (w.sqrt() + eps)
+        p.add_(grad_delta + scale_delta * p)
 
     return loss
