@@ -1,4 +1,5 @@
 # Model implementation based on Zipformer (Yao et al., 2024) and icefall's Zipformer implementation.
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -42,7 +43,7 @@ class BiasNorm(nn.Module):
   def __init__(self, embed_dim):
     super().__init__()
     self.bias = nn.Parameter(torch.rand(embed_dim))
-    self.gamma = nn.Parameter(torch.tensor(0))
+    self.gamma = nn.Parameter(torch.tensor(0.0))
 
   def forward(self, x):
     # x.shape = [Batch, Time, Embedding Dim]
@@ -65,13 +66,14 @@ class Sampler(nn.Module):
 
     # Downsample: [B, T, E] -> [B, T // factor, E]
     if T % self.f != 0:
-      next_multiple = T // self.f + self.f
+      next_multiple = math.ceil(T / self.f) * self.f
       pad = torch.zeros(B, next_multiple - T, E, device=x.device, dtype=x.dtype)
       x = torch.cat((x, pad), dim=1)
 
+    # Weighted averaging of groups of twp consecutive time frames
+    norm_weights = torch.softmax(self.weights[None, None, :, None], dim=-1)
     grouped = x.reshape(B, T // self.f, self.f, E)
-    weighted = (grouped * self.weights[None, :, None, None])
-    return weighted.sum(dim=1)
+    return (grouped * norm_weights).sum(dim=2)
 
 class ConvEmbed(nn.Module):
   def __init__(self, n_mels, embed_dim):
@@ -109,9 +111,9 @@ class ConvEmbed(nn.Module):
 
     # [B, C, T, F] -> [B, C, F, T] -> [B, C * F, T] -> [B, T, C * F]
     r = x.clone() + y
-    r = r.permute(-1, -2)
+    r = r.tranpose(-1, -2)
     r = r.flatten(start_dim=1, end_dim=2)
-    r = r.permute(-1, -2)
+    r = r.transpose(-1, -2)
 
     # [B, T, C * F] -> [B, T, E]
     return self.norm(self.proj(r))
@@ -121,10 +123,11 @@ class NonLinearAttention(nn.Module):
     super().__init__()
     # "...it first projects the input with 3 linear layers A, B, and C,
     # each being of 3/4 input dimension" (p. 4)
-    self.a_proj = nn.Linear(embed_dim, embed_dim * 0.75, bias=False)
-    self.b_proj = nn.Linear(embed_dim, embed_dim * 0.75, bias=False)
-    self.c_proj = nn.Linear(embed_dim, embed_dim * 0.75, bias=False)
-    self.linear = nn.Linear(embed_dim * 0.75, embed_dim)
+    proj_dim = int(embed_dim * 0.75)
+    self.a_proj = nn.Linear(embed_dim, proj_dim, bias=False)
+    self.b_proj = nn.Linear(embed_dim, proj_dim, bias=False)
+    self.c_proj = nn.Linear(embed_dim, proj_dim, bias=False)
+    self.linear = nn.Linear(proj_dim, embed_dim)
 
   def forward(self, x, attn_weights):
     # Non-linear attention is single headed
@@ -145,8 +148,9 @@ class EncoderBlock(nn.Module):
     # "...For the three feed-forward modules in each Zipformer block, the hidden dimensions
     # in the first one and the last one are 3/4 and 5/4 of that in the middle one."
     self.ff1 = nn.Sequential(
-      nn.Linear(embed_dim, ff_dim * 0.75),
-      nn.Linear(ff_dim * 0.75, embed_dim)
+      nn.Linear(embed_dim, int(ff_dim * 0.75)),
+      SwooshL(),
+      nn.Linear(int(ff_dim * 0.75), embed_dim)
     )
 
     self.nla = NonLinearAttention(embed_dim)
@@ -171,8 +175,9 @@ class EncoderBlock(nn.Module):
                            padding=(conv_kernel - 1) // 2, bias=False)
 
     self.ff3 = nn.Sequential(
-      nn.Linear(embed_dim, ff_dim * 1.25),
-      nn.Linear(ff_dim * 1.25, embed_dim)
+      nn.Linear(embed_dim, int(ff_dim * 1.25)),
+      SwooshL(),
+      nn.Linear(int(ff_dim * 1.25), embed_dim)
     )
 
     self.norm = BiasNorm(embed_dim)
@@ -187,18 +192,18 @@ class EncoderBlock(nn.Module):
 
     # Zipformer splits multihead attention into computing shared weights and
     # computing scaled values in order to amortize the cost of attention.
-    queries = self.Q_proj(r).view(B, T, self.H, self.d_k).permute(1, 2)
-    keys = self.K_proj(r).view(B, T, self.H, self.d_k).permute(1, 2)
+    queries = self.Q_proj(r).view(B, T, self.H, self.d_k).transpose(1, 2)
+    keys = self.K_proj(r).view(B, T, self.H, self.d_k).transpose(1, 2)
     scale = torch.sqrt(torch.tensor(self.d_k))
-    logits = (queries.permute(-2, -1) @ keys) / scale # [B, H, N, N]
+    logits = (queries @ keys.transpose(-2, -1)) / scale # [B, H, N, N]
     attn_weights = torch.softmax(logits, dim=-1)
 
     r = r + self.ff1(x)
     r = r + self.nla(r, attn_weights)
 
     # First Self-Attention
-    v1 = self.V_proj1(r).view(B, T, self.H, self.d_v).permute(1, 2)
-    result1 = (attn_weights @ v1).permute(1, 2).reshape(B, T, self.H * self.d_v)
+    v1 = self.V_proj1(r).view(B, T, self.H, self.d_v).transpose(1, 2)
+    result1 = (attn_weights @ v1).transpose(1, 2).reshape(B, T, self.H * self.d_v)
     r = r + self.O_proj1(result1)
 
     r = r + self.conv1(r)
@@ -206,8 +211,8 @@ class EncoderBlock(nn.Module):
     r = self.mid_bypass(x.clone(), r)
 
     # Second Self-Attention
-    v2 = self.V_proj2(r).view(B, T, self.H, self.d_v).permute(1, 2)
-    result2 = (attn_weights @ v2).permute(1, 2).reshape(B, T, self.H * self.d_v)
+    v2 = self.V_proj2(r).view(B, T, self.H, self.d_v).transpose(1, 2)
+    result2 = (attn_weights @ v2).transpose(1, 2).reshape(B, T, self.H * self.d_v)
     r = r + self.O_proj2(result2)
 
     r = r + self.conv2(r)
@@ -224,10 +229,10 @@ class Zipformer(nn.Module):
     self.conv_embed = ConvEmbed(n_mels, embed_dims[0])
 
     self.stacks = nn.ModuleList([
-      nn.ModuleList([
+      nn.Sequential(*[
         EncoderBlock(embed_dims[i], ff_dims[i],
                      conv_kernel_sizes[i], layer_heads[i])
-        for _ in layer_counts[i]
+        for _ in range(layer_counts[i])
       ])
       for i in range(self.n_layers)
     ])

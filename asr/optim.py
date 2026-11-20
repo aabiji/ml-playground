@@ -1,7 +1,23 @@
 import torch
+import math
 from torch.optim import Optimizer
 
-# TODO: Eden optimizer
+def eden_lr_scheduler(global_step, start_lr, base_lr, warmup_steps,
+                      step_threshold, epoch_threshold, steps_per_epoch):
+  step_dampen = (global_step ** 2 + step_threshold ** 2) / (step_threshold ** 2)
+  step_dampen = math.pow(step_dampen, -0.25)
+
+  epoch = global_step // steps_per_epoch
+  epoch_dampen = (epoch ** 2 + epoch_threshold ** 2) / (epoch_threshold ** 2)
+  epoch_dampen = math.pow(epoch_dampen, -0.25)
+
+  slope = (1 - start_lr) / warmup_steps
+  warmup_lr = slope * global_step + start_lr
+
+  # Considering the step index and the epoch index keeps the amount of parameter change
+  # roughly constant after a certain amount of training data when the batch size is changed.
+  # However, this does not make this scheduler batch size invariant.
+  return base_lr * step_dampen * epoch_dampen * warmup_lr
 
 class ScaledAdam(Optimizer):
   """
@@ -44,17 +60,17 @@ class ScaledAdam(Optimizer):
         if len(state) == 0:
           state["t"] = 0 # Time step
           # First and second-order scale moments (scalar)
-          state["n"] = 0
-          state["w"] = 0
+          state["n"] = torch.zeros(())
+          state["w"] = torch.zeros(())
           # First and second-order gradient moments
           state["m"] = torch.zeros_like(p, memory_format=torch.preserve_format)
           state["v"] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
-        state["step"] += 1
-        t = state["step"]
+        state["t"] += 1
+        t = state["t"]
 
         # The bias-correction term amplifies the moment when t is small, and that amplification diminishes as t increases
-        c = torch.sqrt(torch.tensor(1 - b2 ** t) / (1 - b1 ** t)).item()
+        c = math.sqrt(1 - b2 ** t) / (1 - b1 ** t)
 
         # The root mean square of p (parameter scale) should never be zero,
         # since that would make grad_delta zero forever and break stepping.
