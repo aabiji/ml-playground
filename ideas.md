@@ -1,0 +1,9 @@
+- Train a gpt on shakespear or tiny stories and actually get inference perf
+  - Study how nanochat is implemented
+- Recreate grokking modular addition
+- Curious about optimizers: has a similar concept to ScaledAdam been applied to other problems?
+  - [AdamW](https://arxiv.org/pdf/1711.05101)
+  - [u-µP](https://arxiv.org/pdf/2407.17465v3)
+- Should learn about [YaRN](https://arxiv.org/pdf/2309.00071)
+- What's CUDA?
+- Understand and implement DDPM

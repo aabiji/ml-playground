@@ -1,16 +1,5 @@
+**Note: I've stopped working on this project for the time being. The code in scratch.py is very buggy and incomplete.**
 
-General Ideas:
-- Train a gpt on shakespear or tiny stories and actually get inference perf
-  - Study how nanochat is implemented
-- Recreate grokking modular addition
-- Understand and implement DDPM
-- Curious about optimizers: has a similar concept to ScaledAdam been applied to other problems?
-  - [AdamW](https://arxiv.org/pdf/1711.05101)
-  - [u-µP](https://arxiv.org/pdf/2407.17465v3)
-- Should learn about [YaRN](https://arxiv.org/pdf/2309.00071)
-- What's CUDA?
-- **Implement tiny ASR model**
-  - Build a voice dictation daemon for my laptop and preferably it would skip words like “period” and “comma", with actual periods and commas (given the appropriate context). And be small enough overhead that I can continually run this or launch the demon repeatedly with a keyboard shortcut.
 
 Questions:
 - How should I be normalizing spectrograms?
