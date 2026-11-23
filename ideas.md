@@ -7,3 +7,4 @@
 - Should learn about [YaRN](https://arxiv.org/pdf/2309.00071)
 - What's CUDA?
 - Understand and implement DDPM
+- [Famous Papers](https://papers.baulab.info/)
