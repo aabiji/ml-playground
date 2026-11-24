@@ -1,10 +1,8 @@
-- Train a gpt on shakespear or tiny stories and actually get inference perf
-  - Study how nanochat is implemented
-- Recreate grokking modular addition
-- Curious about optimizers: has a similar concept to ScaledAdam been applied to other problems?
+- Curious about optimizers: has something like ScaledAdam been applied to other problems?
   - [AdamW](https://arxiv.org/pdf/1711.05101)
   - [u-µP](https://arxiv.org/pdf/2407.17465v3)
-- Should learn about [YaRN](https://arxiv.org/pdf/2309.00071)
-- What's CUDA?
-- Understand and implement DDPM
-- [Famous Papers](https://papers.baulab.info/)
+- Catch up on RoPE improvements, [YaRN](https://arxiv.org/pdf/2309.00071), etc
+- Can we improve gradient descent?
+  - [EGGROLL paper](https://arxiv.org/abs/2511.16652)
+- Study how nanochat is implemented and try to train my own llm that actually has coherent inference
+- Read [famous Papers](https://papers.baulab.info/)
